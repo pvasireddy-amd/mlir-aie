@@ -661,5 +661,43 @@ def AIE_NpuWriteBdExShimTileOp: AIEX_Op<"npu.writebd_shimtile", []> {
     writebd_shimtile operator
   }];
 }
+// WRITEBD_EXTEND_MEMTILE
+def AIE_NpuWriteBdExMemTileOp: AIEX_Op<"npu.writebd_memtile", []> {
+  let summary = "dma operator";
+  let arguments = (
+    ins I32Attr:$column,
+        I32Attr:$column_num,
+        I32Attr:$ddr_id,
+        I32Attr:$bd_id,
+        I32Attr:$buffer_length,
+        I32Attr:$buffer_offset,
+        I32Attr:$enable_packet,
+        I32Attr:$out_of_order_id,
+        I32Attr:$packet_id,
+        I32Attr:$packet_type,
+        I32Attr:$d0_size,
+        I32Attr:$d0_stride,
+        I32Attr:$d1_size,
+        I32Attr:$d1_stride,
+        I32Attr:$d2_stride,
+        I32Attr:$iteration_current,
+        I32Attr:$iteration_size,
+        I32Attr:$iteration_stride,
+        I32Attr:$next_bd,
+        I32Attr:$use_next_bd,
+        I32Attr:$valid_bd,
+        I32Attr:$lock_rel_val,
+        I32Attr:$lock_rel_id,
+        I32Attr:$lock_acq_enable,
+        I32Attr:$lock_acq_val,
+        I32Attr:$lock_acq_id
+  );
+  let results = (outs );
+  let assemblyFormat = [{ attr-dict }];
+  let hasVerifier = 1;
+  let description = [{
+    writebd_memtile operator
+  }];
+}
 
 #endif // AIEX_OPS

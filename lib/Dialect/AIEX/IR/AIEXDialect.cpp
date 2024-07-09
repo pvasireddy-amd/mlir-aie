@@ -145,3 +145,25 @@ LogicalResult AIEX::NpuWriteBdExShimTileOp::verify() {
     return emitOpError("Iteration Stride exceeds the [0:1M-1] range.");
   return success();
 }
+
+LogicalResult AIEX::NpuWriteBdExMemTileOp::verify() {
+  const auto &targetModel = AIE::getTargetModel(*this);
+  auto numBds = targetModel.getNumBDs(0, 0); // assume shim
+  if (getBdId() > numBds)
+    return emitOpError("BD ID exceeds the maximum ID.");
+  if (getD0Size() > 0x3FF)
+    return emitOpError("D0 Size exceeds the [0:1023] range.");
+  if (getD0Stride() > 0xFFFFF)
+    return emitOpError("D0 Stride exceeds the [0:1M-1] range.");
+  if (getD1Size() > 0x3FF)
+    return emitOpError("D1 Size exceeds the [0:1023] range.");
+  if (getD1Stride() > 0xFFFFF)
+    return emitOpError("D1 Stride exceeds the [0:1M-1] range.");
+  if (getD2Stride() > 0xFFFFF)
+    return emitOpError("D2 Stride exceeds the [0:1M-1] range.");
+  if (getIterationSize() > 0x3F)
+    return emitOpError("Iteration Size exceeds the [0:63] range.");
+  if (getIterationStride() > 0xFFFFF)
+    return emitOpError("Iteration Stride exceeds the [0:1M-1] range.");
+  return success();
+}

@@ -1,0 +1,3 @@
+/scratch/pvasired/mlir-aie/programming_examples/basic/mem_dma/_build/CMakeFiles/passThroughDMAs.dir
+/scratch/pvasired/mlir-aie/programming_examples/basic/mem_dma/_build/CMakeFiles/edit_cache.dir
+/scratch/pvasired/mlir-aie/programming_examples/basic/mem_dma/_build/CMakeFiles/rebuild_cache.dir

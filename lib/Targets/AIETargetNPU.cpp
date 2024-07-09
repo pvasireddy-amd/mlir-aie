@@ -127,6 +127,61 @@ void appendWriteBdShimTile(std::vector<uint32_t> &instructions,
   words[9] |= (op.getLockAcqEnable() & 0x1) << 12;
   words[9] |= (op.getLockAcqVal() & 0xef) << 5;
   words[9] |= op.getLockAcqId() & 0xf;
+} 
+void appendWriteBdMemTile(std::vector<uint32_t> &instructions,
+                           NpuWriteBdExMemTileOp op) {
+
+  auto words = reserveAndGetTail(instructions, 10);
+
+  uint32_t opCode = 9;
+  words[0] |= (opCode & 0xff) << 24;
+  words[0] |= (op.getColumn() & 0xff) << 16;
+  words[0] |= (op.getColumnNum() & 0xff) << 8;
+  words[0] |= (op.getBdId() & 0xf);
+
+
+    // DMA_BDX_0
+    words[1] |= (op.getEnablePacket() & 0x1) << 31;
+    words[1] |= (op.getPacketType() & 0x7) << 28;
+    words[1] |= (op.getPacketId() & 0x1f) << 23;
+    words[1] |= (op.getOutOfOrderId() & 0x3f) << 17;
+    words[1] |=  op.getBufferLength() & 0x1ffff;
+
+    // DMA_BDX_1
+    words[2] |= (op.getNextBd() & 0x3f) << 20;
+    words[2] |= (op.getUseNextBd() & 0x1) << 19;
+    words[2] |= op.getBufferOffset() & 0x7ffff;
+
+    // DMA_BDX_2
+    words[3] |= (op.getD0Size() & 0x3ff) << 17;
+    words[3] |= op.getD0Stride() & 0x1ffff;
+
+    // DMA_BDX_3
+    // TODO: Secure Access
+    words[4] |= (op.getD1Size() & 0x3ff) << 17;
+    words[4] |= op.getD1Stride() & 0x1ffff;
+
+    // DMA_BDX_4
+    // words[8] |= (op.getD2Size() & 0x3ff) << 17;
+    words[5] |= op.getD2Stride() & 0x1ffff;
+
+    // DMA_BDX_5
+    // words[9] |= op.getD3Stride() & 0x1ffff;
+
+    // DMA_BDX_6
+    words[7] |= (op.getIterationCurrent() & 0x3f) << 23;
+    words[7] |= (op.getIterationSize() & 0x3f) << 17;
+    words[7] |= op.getIterationStride() & 0x1ffff;
+
+    // DMA_BDX_7
+    // TODO: TLAST Suppress
+    words[8] |= (op.getValidBd() & 0x1) << 25;
+    words[8] |= (op.getLockRelVal() & 0xef) << 18;
+    words[8] |= (op.getLockRelId() & 0xf) << 13;
+    words[8] |= (op.getLockAcqEnable() & 0x1) << 12;
+    words[8] |= (op.getLockAcqVal() & 0xef) << 5;
+    words[8] |= op.getLockAcqId() & 0xf;    
+    std::cout<<"In MemTile DMAs\n"<<std::endl;
 }
 
 } // namespace
@@ -146,7 +201,9 @@ std::vector<uint32_t> xilinx::AIE::AIETranslateToNPU(ModuleOp module) {
           .Case<NpuSyncOp>([&](auto op) { appendSync(instructions, op); })
           .Case<NpuWrite32Op>([&](auto op) { appendWrite32(instructions, op); })
           .Case<NpuWriteBdExShimTileOp>(
-              [&](auto op) { appendWriteBdShimTile(instructions, op); });
+              [&](auto op) { appendWriteBdShimTile(instructions, op); })
+          .Case<NpuWriteBdExMemTileOp>(
+              [&](auto op) { appendWriteBdMemTile(instructions, op); });
     }
   }
 
@@ -160,3 +217,4 @@ LogicalResult xilinx::AIE::AIETranslateToNPU(ModuleOp module,
     output << llvm::format("%08X\n", w);
   return success();
 }
+
