@@ -181,7 +181,7 @@ void appendWriteBdMemTile(std::vector<uint32_t> &instructions,
     words[8] |= (op.getLockAcqEnable() & 0x1) << 12;
     words[8] |= (op.getLockAcqVal() & 0xef) << 5;
     words[8] |= op.getLockAcqId() & 0xf;    
-    std::cout<<"In MemTile DMAs\n"<<std::endl;
+    std::cout<<"\nIn MemTile DMAs\n"<<words[1]<<"\n"<<words[2]<<std::endl;
 }
 
 } // namespace

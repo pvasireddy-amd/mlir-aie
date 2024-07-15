@@ -155,12 +155,17 @@ public:
     channel_num += infoOp->getChannelIndex();
 
     IntegerAttr column = IntegerAttr::get(i32ty, infoOp->getCol());
+    int row = 0;
 
     uint32_t queue_offset;
-    if (isMM2S)
+    if (isMM2S && row == 0)
       queue_offset = 0x1D214;
-    else
+    else if(row == 0)
       queue_offset = 0x1D204;
+    else if (isMM2S && row == 1)
+      queue_offset = 0xA0634;
+    else if(row == 1)
+      queue_offset = 0xA0604;
     if (channel_num == 1)
       queue_offset += 0x8;
     IntegerAttr address = IntegerAttr::get(ui32ty, queue_offset);
@@ -213,6 +218,7 @@ public:
     auto channelDir = infoOp->getChannelDir();
     bool isMM2S = channelDir == AIE::DMAChannelDir::MM2S;
     int col = infoOp->getCol();
+    int row = 0;
 
     // initialize fields to zero
     auto column = zero;
@@ -363,12 +369,14 @@ public:
     // This logic is kept for now for backward compatibility.
     if (!isMM2S)
       issue_token = BoolAttr::get(ctx, true);
+    if(row == 0)
     (void)rewriter.create<NpuWriteBdExShimTileOp>(
         op->getLoc(), column, column_num, ddr_id, bd_id, buffer_length,
         buffer_offset, enable_packet, out_of_order_id, packet_id, packet_type,
         d0_size, d0_stride, d1_size, d1_stride, d2_stride, iteration_current,
         iteration_size, iteration_stride, next_bd, use_next_bd, valid_bd,
         lock_rel_val, lock_rel_id, lock_acq_enable, lock_acq_val, lock_acq_id);
+    else
     (void)rewriter.create<NpuWriteBdExMemTileOp>(
         op->getLoc(), column, column_num, ddr_id, bd_id, buffer_length,
         buffer_offset, enable_packet, out_of_order_id, packet_id, packet_type,
