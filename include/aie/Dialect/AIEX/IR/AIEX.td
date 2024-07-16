@@ -567,7 +567,7 @@ def AIE_NpuWriteRTPOp: AIEX_Op<"npu.rtp_write", []> {
 }
 
 // Push BD to Queue
-def AIE_NpuShimTilePushQueueOp: AIEX_Op<"npu.shimtile_push_queue", []> {
+def AIE_NpuPushQueueOp: AIEX_Op<"npu.shimtile_push_queue", []> {
   let summary = "bd queue push operator";
   let arguments = (
     ins FlatSymbolRefAttr:$metadata,
@@ -628,6 +628,7 @@ def AIE_NpuWriteBdExShimTileOp: AIEX_Op<"npu.writebd_shimtile", []> {
   let summary = "dma operator";
   let arguments = (
     ins I32Attr:$column,
+        I32Attr:$row,
         I32Attr:$column_num,
         I32Attr:$ddr_id,
         I32Attr:$bd_id,
@@ -666,6 +667,7 @@ def AIE_NpuWriteBdExMemTileOp: AIEX_Op<"npu.writebd_memtile", []> {
   let summary = "dma operator";
   let arguments = (
     ins I32Attr:$column,
+        I32Attr:$row,
         I32Attr:$column_num,
         I32Attr:$ddr_id,
         I32Attr:$bd_id,

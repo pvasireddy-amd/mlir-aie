@@ -972,12 +972,14 @@ struct AIEObjectFifoStatefulTransformPass
   /// shimTile col assigned by the objectFifo lowering.
   void createObjectFifoAllocationInfo(OpBuilder &builder, MLIRContext *ctx,
                                       FlatSymbolRefAttr obj_fifo, int colIndex,
+                                      int rowIndex,
                                       DMAChannelDir channelDir,
                                       int channelIndex) {
     builder.create<ShimDMAAllocationOp>(builder.getUnknownLoc(), obj_fifo,
                                         DMAChannelDirAttr::get(ctx, channelDir),
                                         builder.getI64IntegerAttr(channelIndex),
-                                        builder.getI64IntegerAttr(colIndex));
+                                        builder.getI64IntegerAttr(colIndex),
+                                        builder.getI64IntegerAttr(rowIndex));
   }
 
   void runOnOperation() override {
@@ -1128,7 +1130,7 @@ struct AIEObjectFifoStatefulTransformPass
       if (producer.getProducerTileOp().isShimTile())
         createObjectFifoAllocationInfo(
             builder, ctx, SymbolRefAttr::get(ctx, producer.getName()),
-            producer.getProducerTileOp().colIndex(), producerChan.direction,
+            producer.getProducerTileOp().colIndex(), producer.getProducerTileOp().rowIndex(), producerChan.direction,
             producerChan.channel);
 
       for (auto consumer : consumers) {
@@ -1143,8 +1145,8 @@ struct AIEObjectFifoStatefulTransformPass
         builder.setInsertionPoint(&device.getBody()->back());
         if (consumer.getProducerTileOp().isShimTile())
           createObjectFifoAllocationInfo(
-              builder, ctx, SymbolRefAttr::get(ctx, producer.getName()),
-              consumer.getProducerTileOp().colIndex(), consumerChan.direction,
+              builder, ctx, SymbolRefAttr::get(ctx, producer.getName()), 
+              consumer.getProducerTileOp().colIndex(), consumer.getProducerTileOp().rowIndex(), consumerChan.direction,
               consumerChan.channel);
 
         // create flow

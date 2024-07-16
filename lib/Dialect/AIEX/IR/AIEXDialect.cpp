@@ -114,9 +114,9 @@ LogicalResult AIEX::NpuDmaWaitOp::verify() {
   return success();
 }
 
-LogicalResult AIEX::NpuShimTilePushQueueOp::verify() {
+LogicalResult AIEX::NpuPushQueueOp::verify() {
   const auto &targetModel = AIE::getTargetModel(*this);
-  auto numBds = targetModel.getNumBDs(0, 0); // assume shim
+  auto numBds = targetModel.getNumBDs(0, 0); // shim tile
   if (getBdId() > numBds)
     return emitOpError("BD ID exceeds the maximum ID.");
   if (getRepeatCount() > 255)
@@ -148,7 +148,7 @@ LogicalResult AIEX::NpuWriteBdExShimTileOp::verify() {
 
 LogicalResult AIEX::NpuWriteBdExMemTileOp::verify() {
   const auto &targetModel = AIE::getTargetModel(*this);
-  auto numBds = targetModel.getNumBDs(0, 0); // assume shim
+  auto numBds = targetModel.getNumBDs(0, 1); // assume mem
   if (getBdId() > numBds)
     return emitOpError("BD ID exceeds the maximum ID.");
   if (getD0Size() > 0x3FF)

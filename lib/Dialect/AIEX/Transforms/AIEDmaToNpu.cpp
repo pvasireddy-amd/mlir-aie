@@ -118,7 +118,7 @@ struct RtpToNpuPattern : OpConversionPattern<NpuWriteRTPOp> {
   }
 };
 
-struct PushToNpuPattern : OpConversionPattern<NpuShimTilePushQueueOp> {
+struct PushToNpuPattern : OpConversionPattern<NpuPushQueueOp> {
 
 private:
   ShimDMAllocationGetter &allocGetter;
@@ -131,11 +131,10 @@ public:
       : OpConversionPattern(context, benefit), allocGetter(getter) {}
 
   LogicalResult
-  matchAndRewrite(NpuShimTilePushQueueOp op, OpAdaptor adaptor,
+  matchAndRewrite(NpuPushQueueOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto *ctx = op->getContext();
     auto i32ty = IntegerType::get(ctx, 32);
-    auto zero = IntegerAttr::get(i32ty, 0);
     auto ui32ty =
         IntegerType::get(ctx, 32, IntegerType::SignednessSemantics::Unsigned);
     bool send_tct = op.getIssueToken();
@@ -155,17 +154,21 @@ public:
     channel_num += infoOp->getChannelIndex();
 
     IntegerAttr column = IntegerAttr::get(i32ty, infoOp->getCol());
-    int row = 0;
+    IntegerAttr row = IntegerAttr::get(i32ty, infoOp->getRow());
+    int r = infoOp->getRow();
 
     uint32_t queue_offset;
-    if (isMM2S && row == 0)
+    if(r == 0){
+    if (isMM2S)
       queue_offset = 0x1D214;
-    else if(row == 0)
+    else 
       queue_offset = 0x1D204;
-    else if (isMM2S && row == 1)
-      queue_offset = 0xA0634;
-    else if(row == 1)
+    }else{
+    if (isMM2S)
       queue_offset = 0xA0604;
+    else 
+      queue_offset = 0xA0634;
+    }
     if (channel_num == 1)
       queue_offset += 0x8;
     IntegerAttr address = IntegerAttr::get(ui32ty, queue_offset);
@@ -180,7 +183,7 @@ public:
       cmd |= 0x80000000;
     IntegerAttr value = IntegerAttr::get(ui32ty, cmd);
 
-    rewriter.create<NpuWrite32Op>(op->getLoc(), column.getInt(), zero.getInt(),
+    rewriter.create<NpuWrite32Op>(op->getLoc(), column.getInt(), row.getInt(),
                                   address.getUInt(), value.getUInt());
     rewriter.eraseOp(op);
     return success();
@@ -218,10 +221,12 @@ public:
     auto channelDir = infoOp->getChannelDir();
     bool isMM2S = channelDir == AIE::DMAChannelDir::MM2S;
     int col = infoOp->getCol();
-    int row = 0;
+    int r = infoOp->getRow();
+    // int row = 0;
 
     // initialize fields to zero
     auto column = zero;
+    auto row = zero;
     auto column_num = zero;
     auto ddr_id = zero;
     auto bd_id = zero;
@@ -263,6 +268,9 @@ public:
 
     // column
     column = IntegerAttr::get(i32ty, col);
+
+    // column
+    row = IntegerAttr::get(i32ty, r);
 
     // column_num
     column_num = IntegerAttr::get(i32ty, 1);
@@ -369,22 +377,21 @@ public:
     // This logic is kept for now for backward compatibility.
     if (!isMM2S)
       issue_token = BoolAttr::get(ctx, true);
-    if(row == 0)
+    if (r==0)
     (void)rewriter.create<NpuWriteBdExShimTileOp>(
-        op->getLoc(), column, column_num, ddr_id, bd_id, buffer_length,
+        op->getLoc(), column, row, column_num, ddr_id, bd_id, buffer_length,
         buffer_offset, enable_packet, out_of_order_id, packet_id, packet_type,
         d0_size, d0_stride, d1_size, d1_stride, d2_stride, iteration_current,
         iteration_size, iteration_stride, next_bd, use_next_bd, valid_bd,
         lock_rel_val, lock_rel_id, lock_acq_enable, lock_acq_val, lock_acq_id);
     else
     (void)rewriter.create<NpuWriteBdExMemTileOp>(
-        op->getLoc(), column, column_num, ddr_id, bd_id, buffer_length,
+        op->getLoc(), column, row, column_num, ddr_id, bd_id, buffer_length,
         buffer_offset, enable_packet, out_of_order_id, packet_id, packet_type,
         d0_size, d0_stride, d1_size, d1_stride, d2_stride, iteration_current,
         iteration_size, iteration_stride, next_bd, use_next_bd, valid_bd,
         lock_rel_val, lock_rel_id, lock_acq_enable, lock_acq_val, lock_acq_id);
-
-    rewriter.create<NpuShimTilePushQueueOp>(op->getLoc(), op.getMetadataAttr(),
+    rewriter.create<NpuPushQueueOp>(op->getLoc(), op.getMetadataAttr(),
                                             issue_token, repeat_count, bd_id);
 
     rewriter.eraseOp(op);
@@ -446,7 +453,7 @@ struct AIEDmaToNpuPass : AIEDmaToNpuBase<AIEDmaToNpuPass> {
     target.addIllegalOp<NpuWriteRTPOp>();
     target.addIllegalOp<NpuDmaMemcpyNdOp>();
     target.addIllegalOp<NpuDmaWaitOp>();
-    target.addIllegalOp<NpuShimTilePushQueueOp>();
+    target.addIllegalOp<NpuPushQueueOp>();
 
     RewritePatternSet patterns(&getContext());
     patterns.insert<DmaToNpuPattern>(&getContext(), cachingGetter);

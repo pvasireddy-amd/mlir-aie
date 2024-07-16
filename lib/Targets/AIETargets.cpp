@@ -206,13 +206,15 @@ void registerAIETranslations() {
             shimJSON["channelIndex"] = attrToJSON(channelIndex);
             auto col = shimDMAMeta.getColAttr();
             shimJSON["col"] = attrToJSON(col);
+            auto row = shimDMAMeta.getRowAttr();
+            shimJSON["row"] = attrToJSON(row);
             moduleJSON[shimDMAMeta.getSymName()] =
                 llvm::json::Value(std::move(shimJSON));
           }
           llvm::json::Value topv(std::move(moduleJSON));
           std::string ret;
           llvm::raw_string_ostream ss(ret);
-          ss << llvm::formatv("{0:2}", topv) << "\n";
+          ss << llvm::formatv("{0:3}", topv) << "\n";
           output << ss.str();
         }
         return success();

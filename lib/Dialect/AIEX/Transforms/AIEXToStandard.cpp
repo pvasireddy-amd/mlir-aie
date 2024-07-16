@@ -49,7 +49,7 @@ struct AIEXToStandardPass : AIEXToStandardBase<AIEXToStandardPass> {
     RewritePatternSet removepatterns(&getContext());
     removepatterns.add<AIEXOpRemoval<NpuDmaMemcpyNdOp>>(m.getContext(), m);
     removepatterns.add<AIEXOpRemoval<NpuDmaWaitOp>>(m.getContext(), m);
-    removepatterns.add<AIEXOpRemoval<NpuShimTilePushQueueOp>>(m.getContext(),
+    removepatterns.add<AIEXOpRemoval<NpuPushQueueOp>>(m.getContext(),
                                                               m);
     removepatterns.add<AIEXOpRemoval<NpuWriteRTPOp>>(m.getContext(), m);
     removepatterns.add<AIEXOpRemoval<NpuWrite32Op>>(m.getContext(), m);
