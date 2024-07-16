@@ -136,12 +136,12 @@ void appendWriteBdMemTile(std::vector<uint32_t> &instructions,
   uint32_t opCode = 7;
   words[0] |= (opCode & 0xff) << 24;
   words[0] |= (op.getColumn() & 0xff) << 16;
-  words[0] |= (op.getRow() & 0xf) << 4;
-  words[0] |= (op.getColumnNum() & 0xf);
+  words[0] |= (op.getRow() & 0xff) << 4;
+  words[0] |= (op.getColumnNum() & 0xff);
 
 
-    words[1] |= (op.getBdId() & 0xf);
-    words[2] |= (op.getNextBd() & 0xf);
+    words[1] |= (op.getBdId() & 0xff);
+    words[2] |= (op.getNextBd() & 0xff);
 
     // DMA_BDX_0
     words[3] |= (op.getEnablePacket() & 0x1) << 31;
@@ -156,12 +156,12 @@ void appendWriteBdMemTile(std::vector<uint32_t> &instructions,
     words[4] |= op.getBufferOffset() & 0x7ffff;
 
     // DMA_BDX_2
-    words[5] |= (op.getD0Size() & 0x3ff) << 17;
+    words[5] |= (op.getD0Size() & 0x3f) << 17;
     words[5] |= op.getD0Stride() & 0x1ffff;
 
     // DMA_BDX_3
     // TODO: Secure Access
-    words[6] |= (op.getD1Size() & 0x3ff) << 17;
+    words[6] |= (op.getD1Size() & 0x3f) << 17;
     words[6] |= op.getD1Stride() & 0x1ffff;
 
     // DMA_BDX_4
@@ -178,12 +178,12 @@ void appendWriteBdMemTile(std::vector<uint32_t> &instructions,
 
     // DMA_BDX_7
     // TODO: TLAST Suppress
-    words[10] |= (op.getValidBd() & 0x1) << 25;
-    words[10] |= (op.getLockRelVal() & 0xef) << 18;
-    words[10] |= (op.getLockRelId() & 0xf) << 13;
-    words[10] |= (op.getLockAcqEnable() & 0x1) << 12;
-    words[10] |= (op.getLockAcqVal() & 0xef) << 5;
-    words[10] |= op.getLockAcqId() & 0xf;    
+    words[10] |= (op.getValidBd() & 0x1) << 31;
+    words[10] |= (op.getLockRelVal() & 0x7f) << 24;
+    words[10] |= (op.getLockRelId() & 0xff) << 16;
+    words[10] |= (op.getLockAcqEnable() & 0x1) << 15;
+    words[10] |= (op.getLockAcqVal() & 0x7f) << 8;
+    words[10] |= op.getLockAcqId() & 0xff;    
 }
 
 } // namespace
