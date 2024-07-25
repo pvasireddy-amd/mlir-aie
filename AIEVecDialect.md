@@ -59,7 +59,7 @@ Syntax:
 operation ::= `aievec.add_elem` $lhs `,` $rhs attr-dict `:` type($result)
 ```
 
-AMD-specific aie-ml intrinsic that allows you to perform addition operation
+AMD-specific AIE2 intrinsic that allows you to perform addition operation
 on all types of vectors.`$result = `$lhs + $rhs`.
 
 Traits: `AlwaysSpeculatableImplTrait`
@@ -190,7 +190,7 @@ Effects: `MemoryEffects::Effect{}`
 
 ### `aievec.broadcast` (::xilinx::aievec::BroadcastOp)
 
-_AIE-ML broadcast_
+_AIE2 broadcast_
 
 AMD-specific broadcast intrinsic. Extract element index from vector and broadcasts its
 value to all lanes of the vector.
@@ -224,7 +224,7 @@ Effects: `MemoryEffects::Effect{}`
 
 ### `aievec.broadcast_scalar` (::xilinx::aievec::BroadcastScalarOp)
 
-_AIE-ML broadcast scalar_
+_AIE2 broadcast scalar_
 
 AMD-specific broadcast scalar intrinsic. Broadcasts input value to all vector lanes.
 `$result = broadcast_scalar($source)`
@@ -288,7 +288,7 @@ Effects: `MemoryEffects::Effect{}`
 
 _AIE cast_
 
-AIE-ML cast intrinsic. Cast values from source data type to result data types.
+AIE2 cast intrinsic. Cast values from source data type to result data types.
 `$result = cast($source, isResAcc)`
 
 Traits: `AlwaysSpeculatableImplTrait`
@@ -595,7 +595,7 @@ Effects: `MemoryEffects::Effect{}`
 
 ### `aievec.mac_elem` (::xilinx::aievec::FMAElemOp)
 
-_AIE-ML element-wise vector fused multiply-add_
+_AIE2 element-wise vector fused multiply-add_
 
 AMD-specific multiply-add operation. It multiplies two 1-D vectors in the same channel,
 and adds the result to an accumulator.
@@ -633,7 +633,7 @@ Effects: `MemoryEffects::Effect{}`
 
 ### `aievec.matmul` (::xilinx::aievec::MatMulOp)
 
-_AIEML matrix-multiply and accummulate_
+_AIE2 matrix-multiply and accummulate_
 
 
 Syntax:
@@ -834,13 +834,21 @@ Effects: `MemoryEffects::Effect{}`
 
 ### `aievec.mul_elem` (::xilinx::aievec::MulElemOp)
 
-_AIE-ML vector element-wise multiply_
+_AIE2 vector element-wise multiply_
 
 AMD-specific multiply operation that multiplies two 1-D vectors in the same channel.
 The vector sizes are at least 512 bits.
 `$result = `$lhs * $rhs`.
+Currently, the following are the supported type combinations:
+    lhs                | rhs                | Accumulator
+  :------------------:|:------------------:|:-----------------:
+    `vector<32xi8>`    | `vector<32xi8>`    | `vector<32xi32>`
+    `vector<32xi16>`   | `vector<32xi16>`   | `vector<32xi32>`
+    `vector<16xi32>`   | `vector<16xi32>`   | `vector<16xi64>`
+    `vector<16xbf16>`  | `vector<16xbf16>`  | `vector<16xf32>`
+    `vector<16xf32>`   | `vector<16xf32>`   | `vector<16xf32>`'
 
-Traits: `AlwaysSpeculatableImplTrait`
+Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultShape`, `SameOperandsShape`, `SameTypeOperands`
 
 Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
@@ -850,14 +858,14 @@ Effects: `MemoryEffects::Effect{}`
 
 | Operand | Description |
 | :-----: | ----------- |
-| `lhs` | vector of any type values
-| `rhs` | vector of any type values
+| `lhs` | vector of 8-bit signless integer or 16-bit signless integer or 32-bit signless integer or bfloat16 type or 32-bit float values of length 16/32
+| `rhs` | vector of 8-bit signless integer or 16-bit signless integer or 32-bit signless integer or bfloat16 type or 32-bit float values of length 16/32
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `result` | vector of any type values
+| `result` | vector of 32-bit signless integer or 64-bit signless integer or 32-bit float values of length 16/32
 
 
 ### `aievec.neg` (::xilinx::aievec::NegOp)
@@ -1338,7 +1346,7 @@ Syntax:
 operation ::= `aievec.sub_elem` $lhs `,` $rhs attr-dict `:` type($result)
 ```
 
-AMD-specific aie-ml intrinsic that allows you to perform substraction operation
+AMD-specific AIE2 intrinsic that allows you to perform substraction operation
 on all types of vectors.`$result = `$lhs - $rhs`.
 
 Traits: `AlwaysSpeculatableImplTrait`
