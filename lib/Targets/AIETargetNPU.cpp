@@ -151,12 +151,12 @@ void appendWriteBdMemTile(std::vector<uint32_t> &instructions,
     words[2] |= op.getBufferOffset() & 0x7ffff;
 
     // DMA_BDX_2
-    words[3] |= (op.getD0Size() & 0x3f) << 17;
+    words[3] |= (op.getD0Size() & 0x3ff) << 17;
     words[3] |= op.getD0Stride() & 0x1ffff;
 
     // DMA_BDX_3
     // TODO: Secure Access
-    words[4] |= (op.getD1Size() & 0x3f) << 17;
+    words[4] |= (op.getD1Size() & 0x3ff) << 17;
     words[4] |= op.getD1Stride() & 0x1ffff;
 
     // DMA_BDX_4
