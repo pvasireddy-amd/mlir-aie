@@ -62,7 +62,7 @@ def my_matmul(M, K, N, m, k, n, dtype_in_str, dtype_out_str):
     assert n % t == 0
 
     vectorized = True
-    enable_tracing = False
+    enable_tracing = True
     trace_size = 65536
 
     dtype_in = None
@@ -245,6 +245,7 @@ def my_matmul(M, K, N, m, k, n, dtype_in_str, dtype_out_str):
                         ddr_id=2,
                         size=trace_size,
                         offset=C_sz_in_bytes,
+                        events=[19, 21, 23, 25, 27, 29, 41, 39], #Event1, Event0, INSTR_VECTOR, LOCK_REL_REQ, LOCK_ACQ_REQ, MEMORY_STALL, LOAD, STORE
                     )
 
                 # only do 5 tile rows at a time before synchronizing, so we can reuse BDs

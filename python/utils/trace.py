@@ -16,7 +16,7 @@ class GenericEvent:
     def __init__(self, code: typing.Union[CoreEvent, MemEvent, PLEvent, MemTileEvent]):
         # For backwards compatibility, allow integer as event
         if isinstance(code, int):
-            code = CoreEvent(code)
+            code = MemEvent(code)
         self.code: typing.Union[CoreEvent, MemEvent, PLEvent, MemTileEvent] = code
 
     def get_register_writes(self):
@@ -56,7 +56,7 @@ class PortEvent(GenericEvent):
     def __init__(self, code, port_number, master=True):
         # For backwards compatibility, allow integer as event
         if isinstance(code, int):
-            code = CoreEvent(code)
+            code = MemEvent(code)
         assert code in PortEventCodes
         # fmt: off
         self.event_number = (
@@ -168,17 +168,17 @@ def configure_simple_tracing_aie2(
     ddr_id=2,
     size=8192,
     offset=0,
-    start=CoreEvent.TRUE,
-    stop=CoreEvent.NONE,
+    start=MemEvent.TRUE,
+    stop=MemEvent.NONE,
     events=[
-        CoreEvent.INSTR_EVENT_1,
-        CoreEvent.INSTR_EVENT_0,
-        CoreEvent.INSTR_VECTOR,
-        CoreEvent.INSTR_LOCK_RELEASE_REQ,
-        CoreEvent.INSTR_LOCK_ACQUIRE_REQ,
-        CoreEvent.LOCK_STALL,
-        PortEvent(CoreEvent.PORT_RUNNING_0, 1, True),  # master(1)
-        PortEvent(CoreEvent.PORT_RUNNING_1, 1, False),  # slave(1)
+        MemEvent.DMA_S2MM_0_START_TASK,
+        MemEvent.DMA_MM2S_0_START_TASK,
+        MemEvent.DMA_S2MM_0_FINISHED_BD,
+        MemEvent.DMA_MM2S_0_FINISHED_BD,
+        MemEvent.DMA_S2MM_0_FINISHED_TASK,
+        MemEvent.DMA_MM2S_0_FINISHED_TASK,
+        MemEvent.DMA_S2MM_0_MEMORY_BACKPRESSURE,
+        MemEvent.GROUP_MEMORY_CONFLICT,
     ],
 ):
     dev = shim.parent.attributes["device"]
@@ -189,16 +189,16 @@ def configure_simple_tracing_aie2(
 
     # For backwards compatibility, allow integers for start/stop events
     if isinstance(start, int):
-        start = CoreEvent(start)
+        start = MemEvent(start)
     if isinstance(stop, int):
-        stop = CoreEvent(stop)
+        stop = MemEvent(stop)
 
     # Pad the input so we have exactly 8 events.
     if len(events) > 8:
         raise RuntimeError(
             f"At most 8 events can be traced at once, have {len(events)}."
         )
-    events = (events + [CoreEvent.NONE] * 8)[:8]
+    events = (events + [MemEvent.NONE] * 8)[:8]
 
     # Assure all selected events are valid
     events = [e if isinstance(e, GenericEvent) else GenericEvent(e) for e in events]
@@ -209,10 +209,10 @@ def configure_simple_tracing_aie2(
             raise RuntimeError(
                 f"Tracing: {event.code.name} is a PortEvent and requires a port to be specified alongside it. \n"
                 "To select master port N, specify the event as follows: "
-                f"PortEvent(CoreEvent.{event.code.name}, N, master=True), "
+                f"PortEvent(MemEvent.{event.code.name}, N, master=True), "
                 "and analogously with master=False for slave ports. "
                 "For example: "
-                f"configure_simple_tracing_aie2( ..., events=[PortEvent(CoreEvent.{event.code.name}, 1, master=True)])"
+                f"configure_simple_tracing_aie2( ..., events=[PortEvent(MemEvent.{event.code.name}, 1, master=True)])"
             )
 
     # 0x340D0: Trace Control 0
@@ -234,7 +234,7 @@ def configure_simple_tracing_aie2(
         column=int(tile.col),
         row=int(tile.row),
         address=0x340D4,
-        value=0,
+        value=0x1000,
     )
     # 0x340E0: Trace Event Group 1  (Which events to trace)
     #          0xAABBCCDD    AA, BB, CC, DD <- four event slots

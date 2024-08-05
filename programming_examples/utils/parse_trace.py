@@ -297,54 +297,6 @@ def flatten_repeat_command(commands):
             flat_commands.append(c)
             prev = c
     return flat_commands
-
-
-# Using trace_event_0 = 0x4B222125, trace_event_1 = 0x2D2C1A4F
-def lookupEventNameInStr(event, pid, pid_events):
-    # TODO Expand to other pid for multiple cores? even/odd
-    # For now, we assume a single trace event and key based on that
-    # in the future, the pid will be used to match the right events
-    # print("pid_events[0]: ",pid_events[0])
-    # print("event: ",event)
-    # print("pid_events[0][event]: ",pid_events[0][int(event)])
-    return lookup_event_name_by_code(pid_events[0][int(event)])
-
-    # if pid == 0 or pid == 2: # Core trace
-    #     if event == "0":
-    #         return "KernelExecutesVectorInstruction"
-    #     elif event == "1":
-    #         return "KernelStarts"
-    #     elif event == "2":
-    #         return "KernelDone"
-    #     elif event == "3":
-    #         return "PortRunning0"
-    #     elif event == "4":
-    #         return "PortRunning1"
-    #     elif event == "5":
-    #         return "LockStall"
-    #     elif event == "6":
-    #         return "LockAcquireInstr"
-    #     elif event == "7":lookupEventNameInstr
-    #         return "LockReleaseInstr"
-    # elif pid == 1 or pid == 3: # Memory trace
-    #     if event == "0":
-    #         return "S2mm0StartTask"
-    #     elif event == "1":
-    #         return "S2mm1StartTask"
-    #     elif event == "2":
-    #         return "Mm2s0StartTask"
-    #     elif event == "3":
-    #         return "Mm2s1StartTask"
-    #     elif event == "4":
-    #         return "S2mm0FinishedTask"
-    #     elif event == "5":
-    #         return "S2mm1FinishedTask"
-    #     elif event == "6":
-    #         return "Mm2s0FinishedTask"
-    #     elif event == "7":
-    #         return "Mm2s1FinishedTask"
-
-
 # multiples is a list of events that are being activated
 def deactivate(
     multiples, active_events, timer, cycles, pid, trace_type, loc, pid_events
@@ -466,6 +418,7 @@ def convert_commands_to_json(trace_events, commands, pid_events):
                             trace_events.append(trace_event)
                             #                active_events[event] = timer  + 1
                             active_events[event] = 1
+                          #. print(trace_event["name"])
                     except KeyError:
                         pass
                     # timer = timer + 1 + int(c['cycles'])
@@ -590,7 +543,6 @@ def parse_mlir_trace_events(lines):
     pid_events = list()
     for t in range(NumTraceTypes):
         pid_events.append(dict())
-
     for i in range(len(lines)):
         result = re.search(pattern, lines[i])
         if result:  # match found
@@ -635,6 +587,42 @@ def parse_mlir_trace_events(lines):
 
             # core event 0
             if address == 0x340E0:  # 213216, match ignoring case
+                if pid_events[1].get(key) == None:
+                    pid_events[1][key] = [
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ]  # TODO no better way to init this?
+              #. print("Trace event 0 configured to be ",hex(value))
+                pid_events[1][key][0] = value & 0xFF
+                pid_events[1][key][1] = (value >> 8) & 0xFF
+                pid_events[1][key][2] = (value >> 16) & 0xFF
+                pid_events[1][key][3] = (value >> 24) & 0xFF
+            # core event 1
+            elif address == 0x340E4:  # 213220, match ignoring case
+                if pid_events[1].get(key) == None:
+                    pid_events[1][key] = [
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ]  # TODO no better way to init this?
+              #. print("Trace event 0 configured to be ",hex(value))
+                pid_events[1][key][4] = value & 0xFF
+                pid_events[1][key][5] = (value >> 8) & 0xFF
+                pid_events[1][key][6] = (value >> 16) & 0xFF
+                pid_events[1][key][7] = (value >> 24) & 0xFF
+            # mem event 0
+            elif address == 0x140E0:  # 82144
                 if pid_events[0].get(key) == None:
                     pid_events[0][key] = [
                         0,
@@ -651,8 +639,8 @@ def parse_mlir_trace_events(lines):
                 pid_events[0][key][1] = (value >> 8) & 0xFF
                 pid_events[0][key][2] = (value >> 16) & 0xFF
                 pid_events[0][key][3] = (value >> 24) & 0xFF
-            # core event 1
-            elif address == 0x340E4:  # 213220, match ignoring case
+            # mem event 1
+            elif address == 0x140E4:  # 82148
                 if pid_events[0].get(key) == None:
                     pid_events[0][key] = [
                         0,
@@ -668,41 +656,6 @@ def parse_mlir_trace_events(lines):
                 pid_events[0][key][5] = (value >> 8) & 0xFF
                 pid_events[0][key][6] = (value >> 16) & 0xFF
                 pid_events[0][key][7] = (value >> 24) & 0xFF
-            # mem event 0
-            elif address == 0x140E0:  # 82144
-                if pid_events[1].get(key) == None:
-                    pid_events[1][key] = [
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                    ]  # TODO no better way to init this?
-                # print("Trace event 0 configured to be ",hex(value))
-                pid_events[1][key][0] = value & 0xFF
-                pid_events[1][key][1] = (value >> 8) & 0xFF
-                pid_events[1][key][2] = (value >> 16) & 0xFF
-                pid_events[1][key][3] = (value >> 24) & 0xFF
-            # mem event 1
-            elif address == 0x140E4:  # 82148
-                if pid_events[1].get(key) == None:
-                    pid_events[1][key] = [
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                    ]  # TODO no better way to init this?
-                pid_events[1][key][4] = value & 0xFF
-                pid_events[1][key][5] = (value >> 8) & 0xFF
-                pid_events[1][key][6] = (value >> 16) & 0xFF
-                pid_events[1][key][7] = (value >> 24) & 0xFF
             # memtile event 0
             elif address == 0x940E0:  # 606432
                 if pid_events[3].get(key) == None:
@@ -740,11 +693,12 @@ def parse_mlir_trace_events(lines):
                 pid_events[3][key][7] = (value >> 24) & 0xFF
             # TODO intfc event 0, 1 needs to also be defined
 
-    # print("Found labels:\n")
+  #. print("Found labels:\n")
+  #. print(pid_events)
     # for j in pid_events:
-    #     print("row:",j['row'],", col: ",j['col'])
-    #     print("0: ", j[0], "1: ", j[1], "2: ", j[2], "3: ", j[3])
-    #     print("4: ", j[4], "5: ", j[5], "6: ", j[6], "7: ", j[7])
+        # print("row:",j['row'],", col: ",j['col'])
+        # print("0: ", j[0], "1: ", j[1], "2: ", j[2], "3: ", j[3])
+        # print("4: ", j[4], "5: ", j[5], "6: ", j[6], "7: ", j[7])
     return pid_events
 
 
@@ -1023,5 +977,5 @@ convert_commands_to_json(trace_events, commands_0, pid_events)
 # convert_commands_to_json(trace_events, mem_commands_1, 3, pid_events)
 
 # for t in trace_events:
-#     print(t)
+#   #. print(t)
 print(json.dumps(trace_events))
