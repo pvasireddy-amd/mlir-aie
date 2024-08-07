@@ -247,7 +247,8 @@ public:
 
     auto channelDir = infoOp->getChannelDir();
     bool isMM2S = channelDir == AIE::DMAChannelDir::MM2S;
-    int col = infoOp->getCol();
+    int m_col = infoOp->getCol();
+    int m_row = infoOp->getRow();
 
     // initialize fields to zero
     auto column = zero;
@@ -284,7 +285,9 @@ public:
     int64_t offset = op.getOffsetInBytes();
 
     // column
-    column = IntegerAttr::get(i32ty, col);
+    column = IntegerAttr::get(i32ty, m_col);
+    // row
+    row = IntegerAttr::get(i32ty, m_row);
 
     // arg_idx
     AIEX::RuntimeSequenceOp seq_op =
@@ -392,7 +395,7 @@ public:
         op->getParentOfType<AIE::DeviceOp>().getTargetModel();
 
     uint32_t addr =
-        (col << tm.getColumnShift()) | (0x1D004 + op.getId() * 0x20);
+        (m_col << tm.getColumnShift()) | (0x1D004 + op.getId() * 0x20);
     rewriter.create<NpuAddressPatchOp>(op->getLoc(), addr, arg_idx, offset);
 
     rewriter.create<NpuPushQueueOp>(
@@ -435,7 +438,7 @@ public:
     // Create with `column_num == 1` and `row_num == 1` to check for a single
     // column and row. Row is always 0 for shim tiles.
     (void)rewriter.replaceOpWithNewOp<NpuSyncOp>(
-        op, shimDmaAllocOp->getCol(), /* row */ 0,
+        op, shimDmaAllocOp->getCol(), /* row */ shimDmaAllocOp->getRow(),
         static_cast<uint32_t>(shimDmaAllocOp->getChannelDir()),
         shimDmaAllocOp->getChannelIndex(), 1, 1);
 
@@ -455,11 +458,12 @@ struct WriteBdToBlockWritePattern : OpConversionPattern<NpuWriteBdOp> {
 
     AIE::DeviceOp dev = op->getParentOfType<AIE::DeviceOp>();
     const AIE::AIETargetModel &tm = dev.getTargetModel();
-
-    std::vector<uint32_t> words(8, 0);
+    int n;
+    (op.getRow() <= 1) ? n=8: n=6;
+    std::vector<uint32_t> words(n, 0);
     auto bd_id = op.getBdId();
     uint32_t bd_addr;
-    if (op.getRow() == 0) {
+    if (tm.isShimNOCTile(op.getColumn(), op.getRow())) {
       bd_addr = (op.getColumn() << tm.getColumnShift()) |
                 (op.getRow() << tm.getRowShift()) | (0x1D000 + bd_id * 0x20);
 
@@ -505,7 +509,7 @@ struct WriteBdToBlockWritePattern : OpConversionPattern<NpuWriteBdOp> {
       words[7] |= (op.getLockAcqEnable() & 0x1) << 12;
       words[7] |= (op.getLockAcqVal() & 0xef) << 5;
       words[7] |= op.getLockAcqId() & 0xf;
-    } else {
+    } else if(tm.isMemTile(op.getColumn(), op.getRow())) {
       bd_addr = (op.getColumn() << tm.getColumnShift()) |
                 (op.getRow() << tm.getRowShift()) | (0xA0000 + bd_id * 0x20);
       // DMA_BDX_0
@@ -549,8 +553,48 @@ struct WriteBdToBlockWritePattern : OpConversionPattern<NpuWriteBdOp> {
       words[7] |= (op.getLockAcqVal() & 0x7f) << 8;
       words[7] |= op.getLockAcqId() & 0xff;
     }
-    MemRefType memrefType = MemRefType::get({8}, rewriter.getI32Type());
-    TensorType tensorType = RankedTensorType::get({8}, rewriter.getI32Type());
+    else{
+      bd_addr = (op.getColumn() << tm.getColumnShift()) |
+                (op.getRow() << tm.getRowShift()) | (0x1D000 + bd_id * 0x20);
+     // DMA_BDX_0
+      words[0] |= (op.getBufferOffset() & 0x3fff) << 14;
+      words[0] |= op.getBufferLength() & 0x3fff;
+
+      // DMA_BDX_1
+      words[1] |= (op.getEnablePacket() & 0x1) << 30;
+      words[1] |= (op.getOutOfOrderId() & 0x3f) << 24;
+      words[1] |= (op.getPacketId() & 0x1f) << 19;
+      words[1] |= (op.getPacketType() & 0x7) << 16;
+
+      // DMA_BDX_2
+      words[2] |= (op.getD1Stride() & 0x1fff) << 13;
+      words[2] |= op.getD0Stride() & 0x1fff;
+
+      // DMA_BDX_3
+      words[3] |= (op.getD1Size() & 0xff) << 21;
+      words[3] |= (op.getD0Size() & 0xff) << 13;
+      words[3] |= op.getD2Stride() & 0x1fff;
+
+      // DMA_BDX_4
+      words[4] |= (op.getIterationCurrent() & 0x3f) << 19;
+      words[4] |= (op.getIterationSize() & 0x3f) << 13;
+      words[4] |= op.getIterationStride() & 0x1fff;
+
+      // DMA_BDX_7
+      //TODO: TLAST SUPPRESS
+      words[5] |= (op.getNextBd() & 0xf) << 27;
+      words[5] |= (op.getUseNextBd() & 0x1) << 26;
+      words[5] |= (op.getValidBd() & 0x1) << 25;
+      words[5] |= (op.getLockRelVal() & 0x7f) << 18;
+      words[5] |= (op.getLockRelId() & 0xf) << 13;
+      words[5] |= (op.getLockAcqEnable() & 0x1) << 12;
+      words[5] |= (op.getLockAcqVal() & 0x7f) << 5;
+      words[5] |= op.getLockAcqId() & 0xf;     
+
+      std::cout<<"For Compute Tile: "<<op.getBufferOffset() <<": "<<words[0] <<","<<words[1] <<"," <<words[2] <<"," <<words[3] <<","<<words[4] <<","<< words[5]<<std::endl;      
+    }
+    MemRefType memrefType = MemRefType::get({n}, rewriter.getI32Type());
+    TensorType tensorType = RankedTensorType::get({n}, rewriter.getI32Type());
     memref::GlobalOp global = nullptr;
     {
       OpBuilder::InsertionGuard guard(rewriter);
