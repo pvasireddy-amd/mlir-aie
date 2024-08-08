@@ -22,16 +22,16 @@ using namespace xilinx::AIEX;
 
 namespace {
 
-// Helper class to get a ShimDMAAllocationOp for a given <device, symbol name>
+// Helper class to get a DMAAllocationOp for a given <device, symbol name>
 // pair. An object of this class is invalidated if, for any symbol_name, a
-// ShimDMAAllocationOp that uses it changes, as the cache is not updated in this
+// DMAAllocationOp that uses it changes, as the cache is not updated in this
 // case.
 struct ShimDMAllocationGetter {
 
 public:
-  // Return the first ShimDMAAllocationOp nested inside the DeviceOp 'dev' that
+  // Return the first DMAAllocationOp nested inside the DeviceOp 'dev' that
   // uses the symbol 'sym_name'
-  std::optional<AIE::ShimDMAAllocationOp> get(AIE::DeviceOp dev,
+  std::optional<AIE::DMAAllocationOp> get(AIE::DeviceOp dev,
                                               StringRef sym_name) {
 
     auto key = std::make_pair(dev, sym_name);
@@ -46,14 +46,14 @@ public:
 
 private:
   llvm::DenseMap<std::pair<AIE::DeviceOp, StringRef>,
-                 std::optional<AIE::ShimDMAAllocationOp>>
+                 std::optional<AIE::DMAAllocationOp>>
       allocGetter;
 
-  // Finding the ShimDMAAllocationOp for a given <DeviceOp, symbol_name> pair
+  // Finding the DMAAllocationOp for a given <DeviceOp, symbol_name> pair
   // can be slow when the symbol is used in many places. This version of the
-  // function is only called when the cache does not have a ShimDMAAllocationOp
+  // function is only called when the cache does not have a DMAAllocationOp
   // stored from a previous lookup.
-  std::optional<AIE::ShimDMAAllocationOp> cachelessGet(AIE::DeviceOp dev,
+  std::optional<AIE::DMAAllocationOp> cachelessGet(AIE::DeviceOp dev,
                                                        StringRef sym_name) {
     auto *sym = dev.lookupSymbol(sym_name);
     if (!sym)
@@ -61,7 +61,7 @@ private:
 
     auto uses = SymbolTable::getSymbolUses(sym, dev);
     for (auto use : *uses)
-      if (auto infoOp = dyn_cast<AIE::ShimDMAAllocationOp>(use.getUser()))
+      if (auto infoOp = dyn_cast<AIE::DMAAllocationOp>(use.getUser()))
         return infoOp;
 
     return std::nullopt;
@@ -190,12 +190,17 @@ public:
   matchAndRewrite(NpuPushQueueOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
+    const auto &targetModel = AIE::getTargetModel(op);
     // the offset of the task queue register in the tile
     uint32_t queue_offset;
-    if (op.getDirection() == AIE::DMAChannelDir::MM2S)
+    if (op.getDirection() == AIE::DMAChannelDir::MM2S && targetModel.isShimNOCTile(op.getColumn(),op.getRow()))
       queue_offset = 0x1D214;
-    else
+    else if(targetModel.isShimNOCTile(op.getColumn(),op.getRow()))
       queue_offset = 0x1D204;
+    else if (op.getDirection() == AIE::DMAChannelDir::MM2S && targetModel.isMemTile(op.getColumn(),op.getRow()))
+      queue_offset = 0xA0634;
+    else
+      queue_offset = 0xA0604;
     if (op.getChannel() == 1)
       queue_offset += 0x8;
 
@@ -249,7 +254,8 @@ public:
 
     auto channelDir = infoOp->getChannelDir();
     bool isMM2S = channelDir == AIE::DMAChannelDir::MM2S;
-    int col = infoOp->getCol();
+    int m_col = infoOp->getCol();
+    int m_row = infoOp->getRow();
 
     // initialize fields to zero
     auto column = zero;
@@ -294,7 +300,9 @@ public:
     int64_t offset = op.getOffsetInBytes();
 
     // column
-    column = IntegerAttr::get(i32ty, col);
+    column = IntegerAttr::get(i32ty, m_col);
+    // row
+    row = IntegerAttr::get(i32ty, m_row);
 
     // arg_idx
     AIEX::RuntimeSequenceOp seq_op =
@@ -399,11 +407,13 @@ public:
         d0_stride, d1_size, d1_stride, d2_stride, iteration_current,
         iteration_size, iteration_stride, next_bd, row, use_next_bd, valid_bd,
         lock_rel_val, lock_rel_id, lock_acq_enable, lock_acq_val, lock_acq_id);
+    
+    if(targetModel.isShimNOCTile(m_col, m_row)){
+      uint64_t addr =
+        getBufferDescriptorAddressRegisterAddress(targetModel, op.getId(), m_col);
 
-    uint64_t addr =
-        getBufferDescriptorAddressRegisterAddress(targetModel, op.getId(), col);
-
-    rewriter.create<NpuAddressPatchOp>(op->getLoc(), addr, arg_idx, offset);
+      rewriter.create<NpuAddressPatchOp>(op->getLoc(), addr, arg_idx, offset);
+    }
 
     rewriter.create<NpuPushQueueOp>(
         op->getLoc(), column, row, infoOp->getChannelDirAttr(),
@@ -415,7 +425,7 @@ public:
 };
 
 /// Convert NpuDmaWaitOp into NpuSyncOp by retrieving the necessary
-/// information from the ShimDMAAllocationOp referenced through the
+/// information from the DMAAllocationOp referenced through the
 /// symbol argument of this op.
 struct DmaWaitToSyncPattern : OpConversionPattern<NpuDmaWaitOp> {
 
@@ -436,7 +446,7 @@ public:
     if (!dev)
       return op->emitError("couldn't find parent of type DeviceOp");
 
-    std::optional<AIE::ShimDMAAllocationOp> shimDmaAllocOp =
+    std::optional<AIE::DMAAllocationOp> shimDmaAllocOp =
         allocGetter.get(dev, op.getSymbol());
     if (!shimDmaAllocOp) {
       return op->emitError("couldn't find shim_dma_allocation op");
@@ -445,7 +455,7 @@ public:
     // Create with `column_num == 1` and `row_num == 1` to check for a single
     // column and row. Row is always 0 for shim tiles.
     (void)rewriter.replaceOpWithNewOp<NpuSyncOp>(
-        op, shimDmaAllocOp->getCol(), /* row */ 0,
+        op, shimDmaAllocOp->getCol(), shimDmaAllocOp->getRow(),
         static_cast<uint32_t>(shimDmaAllocOp->getChannelDir()),
         shimDmaAllocOp->getChannelIndex(), 1, 1);
 
@@ -605,7 +615,7 @@ struct AIEDmaToNpuPass : AIEDmaToNpuBase<AIEDmaToNpuPass> {
     target.addLegalDialect<AIEXDialect>();
     target.addLegalDialect<memref::MemRefDialect>();
     target.addLegalOp<AIE::BufferOp>();
-    target.addLegalOp<AIE::ShimDMAAllocationOp>();
+    target.addLegalOp<AIE::DMAAllocationOp>();
 
     target.addIllegalOp<NpuDmaMemcpyNdOp>();
     target.addIllegalOp<NpuDmaWaitOp>();

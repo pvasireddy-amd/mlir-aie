@@ -1503,7 +1503,7 @@ def AIE_PutCascadeOp: AIE_Op<"put_cascade", [HasParent<"CoreOp">]> {
   let assemblyFormat = [{ `(` $cascade_value `:` type($cascade_value) `)` attr-dict }];
 }
 
-def AIE_ShimDMAAllocationOp : AIE_Op<"shim_dma_allocation", [HasParent<"DeviceOp">]> {
+def AIE_DMAAllocationOp : AIE_Op<"shim_dma_allocation", [HasParent<"DeviceOp">]> {
   let summary = "Runtime allocation information for a single shim DMA";
   let description = [{
     This op exists for cases where shim_dma configuration is performed outside of MLIR-AIE
@@ -1531,6 +1531,7 @@ def AIE_ShimDMAAllocationOp : AIE_Op<"shim_dma_allocation", [HasParent<"DeviceOp
         DMAChannelDir:$channel_dir,
         AIEI64Attr:$channel_index,
         AIEI64Attr:$col,
+        AIEI64Attr:$row,
         // If this is set we are using the PLIO in this ShimTile
         DefaultValuedAttr<BoolAttr, "false">:$plio
   );
@@ -1538,7 +1539,7 @@ def AIE_ShimDMAAllocationOp : AIE_Op<"shim_dma_allocation", [HasParent<"DeviceOp
   let results = (outs);
 
   let assemblyFormat = [{
-    $sym_name `(` $channel_dir `,` $channel_index `,` $col `)` attr-dict
+    $sym_name `(` $channel_dir `,` $channel_index `,` $col `,` $row `)` attr-dict
   }];
 }
 

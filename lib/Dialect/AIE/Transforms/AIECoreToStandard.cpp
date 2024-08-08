@@ -586,7 +586,7 @@ struct AIECoreToStandardPass : AIECoreToStandardBase<AIECoreToStandardPass> {
         AIEOpRemoval<DeviceOp>, AIEOpRemoval<TileOp>, AIEOpRemoval<FlowOp>,
         AIEOpRemoval<MemOp>, AIEOpRemoval<ShimDMAOp>, AIEOpRemoval<ShimMuxOp>,
         AIEOpRemoval<SwitchboxOp>, AIEOpRemoval<LockOp>, AIEOpRemoval<BufferOp>,
-        AIEOpRemoval<ExternalBufferOp>, AIEOpRemoval<ShimDMAAllocationOp>,
+        AIEOpRemoval<ExternalBufferOp>, AIEOpRemoval<DMAAllocationOp>,
         AIEOpRemoval<CascadeFlowOp>, AIEOpRemoval<ConfigureCascadeOp>>(
         m.getContext(), m);
 

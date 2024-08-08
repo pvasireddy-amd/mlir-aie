@@ -42,7 +42,7 @@ const char *hsa_cpp_file_header = R"code(
 
 )code";
 
-std::optional<AIE::ShimDMAAllocationOp>
+std::optional<AIE::DMAAllocationOp>
 getAllocOpForSymbol(AIE::DeviceOp dev, StringRef sym_name) {
   auto sym = dev.lookupSymbol(sym_name);
   if (!sym)
@@ -50,7 +50,7 @@ getAllocOpForSymbol(AIE::DeviceOp dev, StringRef sym_name) {
 
   auto uses = SymbolTable::getSymbolUses(sym, dev);
   for (auto use : *uses)
-    if (auto infoOp = dyn_cast<AIE::ShimDMAAllocationOp>(use.getUser()))
+    if (auto infoOp = dyn_cast<AIE::DMAAllocationOp>(use.getUser()))
       return infoOp;
 
   return std::nullopt;
