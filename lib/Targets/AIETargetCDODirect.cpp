@@ -248,6 +248,8 @@ LogicalResult configureBdInBlock(XAie_DevInst &devInst, XAie_DmaDesc &dmaTileBd,
                                  std::optional<int> nextBdId) {
   std::optional<int> packetType;
   std::optional<int> packetID;
+
+  // Below should go
   auto maybePacketOps = block.getOps<DMABDPACKETOp>();
   if (!maybePacketOps.empty()) {
     assert(llvm::range_size(maybePacketOps) == 1 &&
@@ -327,6 +329,7 @@ LogicalResult configureBdInBlock(XAie_DevInst &devInst, XAie_DmaDesc &dmaTileBd,
   // ND zero padding.
   std::optional<llvm::ArrayRef<BDPadLayoutAttr>> padDims =
       bdOp.getPadDimensions();
+
   if (padDims) {
     XAie_DmaPadTensor dmaPadTensor = {};
     dmaPadTensor.NumDim = padDims->size();
@@ -360,6 +363,11 @@ LogicalResult configureBdInBlock(XAie_DevInst &devInst, XAie_DmaDesc &dmaTileBd,
     auto enableNextBd = 1;
     TRY_XAIE_API_EMIT_ERROR(bdOp, XAie_DmaSetNextBd, &dmaTileBd,
                             nextBdId.value(), enableNextBd);
+  }
+
+  if (auto packetInfo = bdOp.getPacket()) {
+    packetType = packetInfo->getPktType();
+    packetID = packetInfo->getPktId();
   }
 
   if (packetID) {
@@ -631,9 +639,11 @@ struct AIEControl {
 
         bool isdma = connectOp.getDestBundle() == WireBundle::DMA;
         // assume a connection going south from row zero gets wired to shimdma
-        // by a shimmux. TODO: fix the assumption
+        // by a shimmux. But if it's south 0 assume it's tct routing and don't
+        // drop header. TODO: fix the assumption
         if (!isdma && (switchboxOp.rowIndex() == 0))
-          isdma = connectOp.getDestBundle() == WireBundle::South;
+          isdma = (connectOp.getDestBundle() == WireBundle::South) &&
+                  (connectOp.destIndex() != 0);
         // Flag for overriding DROP_HEADER. TODO: Formalize this in tablegen
         isdma &= !connectOp->hasAttr("keep_pkt_header");
         auto dropHeader =

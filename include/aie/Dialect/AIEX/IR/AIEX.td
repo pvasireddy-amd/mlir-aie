@@ -549,6 +549,11 @@ def AIE_NpuDmaMemcpyNdOp: AIEX_Op<"npu.dma_memcpy_nd", [
     The hardware only supports a single static offset, and this offset is calculated at compile time.
     Thus, all offsets can be equivalently expressed with the lowest dimension only.
 
+    #### Packet Header Attribute
+    The optional `packet` attribute defines the packet header and packet type that gets issued per DMA BD.
+    If the attribute is set, then every time the DMA BD gets issued, a packet header is generated prior to the transmission of data.
+    The packet header is used to guide arbitration throughout a packet-routed data flow, where each switch box arbitrates the data packet to stream to a successor based on the packet header.
+
   }];
 
   let arguments = (
@@ -562,6 +567,7 @@ def AIE_NpuDmaMemcpyNdOp: AIEX_Op<"npu.dma_memcpy_nd", [
         ConfinedAttr<DenseI64ArrayAttr, [DenseArrayCount<4>]>:$static_offsets,
         ConfinedAttr<DenseI64ArrayAttr, [DenseArrayCount<4>]>:$static_sizes,
         ConfinedAttr<DenseI64ArrayAttr, [DenseArrayCount<4>]>:$static_strides,
+        OptionalAttr<PacketInfoAttr>:$packet,
         FlatSymbolRefAttr:$metadata,
         I64Attr:$id,
         DefaultValuedOptionalAttr<BoolAttr, "false">:$issue_token
@@ -571,7 +577,8 @@ def AIE_NpuDmaMemcpyNdOp: AIEX_Op<"npu.dma_memcpy_nd", [
     `(` $x `,` $y `,` $memref ``
     custom<DynamicIndexList>($offsets, $static_offsets) ``
     custom<DynamicIndexList>($sizes, $static_sizes) ``
-    custom<DynamicIndexList>($strides, $static_strides) `)`
+    custom<DynamicIndexList>($strides, $static_strides) ``
+    (`,` `packet` `=` $packet^)? `)`
     attr-dict `:` type($memref)
   }];
 
@@ -682,6 +689,32 @@ def AIE_NpuWrite32Op: AIEX_Op<"npu.write32", []> {
   }];
   let description = [{
     NPU write32 operator writes a 32bit value to the AIE array.
+    If 'buffer' is present then 'address' is interpreted as an offset into the
+    aie.buffer with symbol name 'buffer'.
+    If 'column' and 'row' are present then 'address' is interpreted as an offset
+    into the memory space of aie.tile(column, row).
+    If 'buffer' is not present and 'column' and 'row' are not present then
+    'address' is interpreted as a full 32-bit address in the AIE array.
+  }];
+}
+
+// MASKWRITE
+def AIE_NpuMaskWrite32Op: AIEX_Op<"npu.maskwrite32", []> {
+  let summary = "Write a masked 32-bit value to the AIE array";
+  let arguments = (
+    ins UI32Attr:$address,
+        UI32Attr:$value,
+        UI32Attr:$mask,
+        OptionalAttr<FlatSymbolRefAttr>:$buffer,
+        OptionalAttr<I32Attr>:$column,
+        OptionalAttr<I32Attr>:$row
+  );
+  let results = (outs );
+  let assemblyFormat = [{
+    attr-dict
+  }];
+  let description = [{
+    NPU mask write32 operator writes a masked 32bit value to the AIE array.
     If 'buffer' is present then 'address' is interpreted as an offset into the
     aie.buffer with symbol name 'buffer'.
     If 'column' and 'row' are present then 'address' is interpreted as an offset
