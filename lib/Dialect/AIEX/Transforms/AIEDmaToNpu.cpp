@@ -229,10 +229,23 @@ public:
 
     // the offset of the task queue register in the tile
     uint32_t queue_offset;
-    if (op.getDirection() == AIE::DMAChannelDir::MM2S)
-      queue_offset = 0x1D214;
-    else
-      queue_offset = 0x1D204;
+    auto device = op->getParentOfType<AIE::DeviceOp>();
+    const AIE::AIETargetModel &target_model = device.getTargetModel();
+    if(target_model.isShimNOCTile(op.getColumn(), op.getRow())){
+      if (op.getDirection() == AIE::DMAChannelDir::MM2S)
+        queue_offset = 0x1D214;
+      else
+        queue_offset = 0x1D204;
+    }
+    else if(target_model.isMemTile(op.getColumn(), op.getRow())){
+      if (op.getDirection() == AIE::DMAChannelDir::MM2S)
+        queue_offset = 0xA0634;
+      else
+        queue_offset = 0xA0604;
+    }
+    else{
+      op->emitOpError("Currently run-time initialization of task queues is only supported for ShimTiles and MemTiles.");
+    }
     if (op.getChannel() == 1)
       queue_offset += 0x8;
 
@@ -246,7 +259,7 @@ public:
       cmd |= 0x80000000;
 
     auto column = rewriter.getI32IntegerAttr(op.getColumn());
-    auto row = rewriter.getI32IntegerAttr(0);
+    auto row = rewriter.getI32IntegerAttr(op.getRow());
     rewriter.create<NpuWrite32Op>(op->getLoc(), queue_offset, cmd, nullptr,
                                   column, row);
     rewriter.eraseOp(op);
