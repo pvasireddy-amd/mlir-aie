@@ -155,7 +155,7 @@ static TileElement getParentTileElement(Operation *op) {
   return llvm::dyn_cast<TileElement>(parent);
 }
 
-struct UsesAreAccessible {
+struct UsesAreAccessable {
   static LogicalResult verifyTrait(Operation *op) {
     auto thisElement = cast<TileElement>(op);
     auto thisID = thisElement.getTileID();
@@ -164,31 +164,22 @@ struct UsesAreAccessible {
     for (auto *user : users) {
       // AIE.useLock may be used in a device to set the lock's default value
       // Allow in a toplevel module for backward compatibility
-      if (llvm::isa_and_nonnull<DeviceOp, ModuleOp>(user->getParentOp())) {
-        continue;
-      }
-      // If any parent prescribes that accessibility checks be skipped,
-      // skip the check for that user.
-      if (user->getParentWithTrait<SkipAccessibilityCheckTrait>()) {
-        continue;
-      }
-      TileElement element = llvm::dyn_cast<TileElement>(user);
-      if (!element) {
-        element = getParentTileElement(user);
-      }
-      if (!element) {
+      if (llvm::isa_and_nonnull<DeviceOp, ModuleOp>(user->getParentOp()))
+        return success();
+      if (auto element = getParentTileElement(user)) {
+
+        auto tileID = element.getTileID();
+        if (!targetModel.isLegalMemAffinity(tileID.col, tileID.row, thisID.col,
+                                            thisID.row))
+          return (op->emitOpError("in Column ")
+                  << thisID.col << " and Row " << thisID.row
+                  << " is accessed from an unreachable tile in Column "
+                  << tileID.col << " and Row " << tileID.row)
+                     .attachNote(user->getLoc())
+                 << "user";
+      } else {
         // This should probably be caught elsewhere as well.
         return op->emitOpError("is accessed outside of a tile")
-                   .attachNote(user->getLoc())
-               << "user";
-      }
-      auto tileID = element.getTileID();
-      if (!targetModel.isLegalMemAffinity(tileID.col, tileID.row, thisID.col,
-                                          thisID.row)) {
-        return (op->emitOpError("in Column ")
-                << thisID.col << " and Row " << thisID.row
-                << " is accessed from an unreachable tile in Column "
-                << tileID.col << " and Row " << tileID.row)
                    .attachNote(user->getLoc())
                << "user";
       }
@@ -487,12 +478,6 @@ LogicalResult ObjectFifoCreateOp::verify() {
                      "on shim tile producers");
   }
 
-  if (getViaSharedMem().has_value()) {
-    if (getConsumerTiles().size() > 1)
-      return emitError(
-          "`via_shared_mem` can only be used in 1-to-1 object FIFOs");
-  }
-
   return success();
 }
 
@@ -600,21 +585,27 @@ LogicalResult ObjectFifoLinkOp::verify() {
                      "shared tile between objectFifos");
 
   if (isJoin()) {
-    if (getFifoIns().size() != getSrcOffsets().size())
-      return emitOpError("number of provided src offsets must be equal "
-                         "to the number of input objectFifos");
+    ObjectFifoCreateOp fifoOut = getOutputObjectFifos()[0];
+    auto elemType =
+        llvm::cast<AIEObjectFifoType>(fifoOut.getElemType()).getElementType();
+    int64_t outputSize = 1;
+    for (auto dim : elemType.getShape())
+      outputSize *= dim;
 
-    if (!getDstOffsets().empty())
-      return emitOpError("dst offsets should be empty for join");
+    int inputSize = 0;
+    for (auto fifoIn : getInputObjectFifos()) {
+      auto elemType =
+          llvm::cast<AIEObjectFifoType>(fifoIn.getElemType()).getElementType();
+      int64_t nextInputSize = 1;
+      for (int64_t dim : elemType.getShape())
+        nextInputSize *= dim;
+      inputSize += nextInputSize;
+    }
+    if (inputSize != outputSize)
+      return emitError("Total size of input objFifos in ObjectFifoLinkOp must "
+                       "be equal to size of output objFifo");
 
   } else if (isDistribute()) {
-    if (getFifoOuts().size() != getDstOffsets().size())
-      return emitOpError("number of provided dst offsets must be equal "
-                         "to the number of output objectFifos");
-
-    if (!getSrcOffsets().empty())
-      return emitOpError("src offsets should be empty for distribute");
-
     ObjectFifoCreateOp fifoIn = getInputObjectFifos()[0];
     if (!fifoIn.getDimensionsToStream().empty()) {
       return emitOpError("currently does not support objectFifos with "
@@ -625,10 +616,31 @@ LogicalResult ObjectFifoLinkOp::verify() {
         return emitOpError("currently does not support objectFifos with "
                            "dimensionsFromStreamPerConsumer.");
     }
-  } else {
-    if (!getSrcOffsets().empty() && !getDstOffsets().empty())
-      return emitOpError("all offsets should be empty if there is no "
-                         "join or distribute");
+
+    auto elemType =
+        llvm::cast<AIEObjectFifoType>(fifoIn.getElemType()).getElementType();
+    int64_t inputSize = 1;
+    for (auto dim : elemType.getShape())
+      inputSize *= dim;
+
+    int outputSize = 0;
+    for (auto fifoOut : getOutputObjectFifos()) {
+      for (auto dims : fifoOut.getDimensionsFromStreamPerConsumer()) {
+        if (!dims.empty())
+          return emitOpError("currently does not support objectFifos with "
+                             "dimensionsFromStreamPerConsumer.");
+      }
+
+      auto elemType =
+          llvm::cast<AIEObjectFifoType>(fifoOut.getElemType()).getElementType();
+      int64_t nextOutputSize = 1;
+      for (int64_t dim : elemType.getShape())
+        nextOutputSize *= dim;
+      outputSize += nextOutputSize;
+    }
+    if (outputSize != inputSize)
+      return emitError("Total size of output objFifos in ObjectFifoLinkOp must "
+                       "be equal to size of input objFifo");
   }
 
   return success();
@@ -690,46 +702,6 @@ std::vector<ObjectFifoCreateOp> ObjectFifoLinkOp::getOutputObjectFifos() {
     }
   }
   return outputObjFifos;
-}
-
-std::vector<int> ObjectFifoLinkOp::getJoinTranferLengths() {
-  std::vector<int> lengths;
-  if (isJoin()) {
-    auto fifoOut =
-        llvm::cast<AIEObjectFifoType>(getOutputObjectFifos()[0].getElemType());
-    auto elemTypeOut = llvm::cast<MemRefType>(fifoOut.getElementType());
-    int lenOut = elemTypeOut.getNumElements();
-    for (size_t i = 0; i < getFifoIns().size(); i++) {
-      int len = 0;
-      int offset = *getConstantIntValue(getSrcOffsets()[i]);
-      if (i == getFifoIns().size() - 1)
-        len = lenOut - *getConstantIntValue(getSrcOffsets()[i]);
-      else
-        len = *getConstantIntValue(getSrcOffsets()[i + 1]) - offset;
-      lengths.push_back(len);
-    }
-  }
-  return lengths;
-}
-
-std::vector<int> ObjectFifoLinkOp::getDistributeTranferLengths() {
-  std::vector<int> lengths;
-  if (isDistribute()) {
-    auto fifoIn =
-        llvm::cast<AIEObjectFifoType>(getInputObjectFifos()[0].getElemType());
-    auto elemTypeIn = llvm::cast<MemRefType>(fifoIn.getElementType());
-    int lenIn = elemTypeIn.getNumElements();
-    for (size_t i = 0; i < getFifoOuts().size(); i++) {
-      int offset = *getConstantIntValue(getDstOffsets()[i]);
-      int len = 0;
-      if (i == getFifoOuts().size() - 1)
-        len = lenIn - *getConstantIntValue(getDstOffsets()[i]);
-      else
-        len = *getConstantIntValue(getDstOffsets()[i + 1]) - offset;
-      lengths.push_back(len);
-    }
-  }
-  return lengths;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1132,27 +1104,6 @@ bool isLegalTileConnection(TileOp tile, const AIETargetModel &targetModel,
       tile.colIndex(), tile.rowIndex(), srcBundle, srcChan, dstBundle, dstChan);
 }
 
-TileOp TileOp::getOrCreate(mlir::OpBuilder builder, DeviceOp device, int col,
-                           int row) {
-  TileOp tile = nullptr;
-  // Find matching predefined tile at device top level, ...
-  for (auto t : device.getOps<AIE::TileOp>()) {
-    if (t.getRow() == row && t.getCol() == col) {
-      tile = t;
-      break;
-    }
-  }
-  // ... or if undefined, create a new tile op
-  if (!tile) {
-    OpBuilder::InsertionGuard guard(builder);
-    mlir::Block &device_start_block = *device.getBodyRegion().begin();
-    builder.setInsertionPointToStart(&device_start_block);
-    tile = builder.create<TileOp>(builder.getUnknownLoc(),
-                                  builder.getIndexType(), col, 0);
-  }
-  return tile;
-}
-
 //===----------------------------------------------------------------------===//
 // ShimSwitchboxOp
 //===----------------------------------------------------------------------===//
@@ -1340,7 +1291,7 @@ int64_t BufferOp::getAllocationSize() {
 TileOp BufferOp::getTileOp() { return cast<TileOp>(getTile().getDefiningOp()); }
 
 LogicalResult BufferOp::verify() {
-  if (UsesAreAccessible::verifyTrait(*this).failed())
+  if (UsesAreAccessable::verifyTrait(*this).failed())
     return failure();
   return success();
 }
@@ -2061,7 +2012,7 @@ int LockOp::colIndex() { return getTileOp().colIndex(); }
 int LockOp::rowIndex() { return getTileOp().rowIndex(); }
 
 LogicalResult LockOp::verify() {
-  if (auto result = UsesAreAccessible::verifyTrait(*this); result.failed())
+  if (auto result = UsesAreAccessable::verifyTrait(*this); result.failed())
     return result;
 
   if (getLockID().has_value()) {
@@ -2213,6 +2164,7 @@ WireBundle getConnectingBundle(WireBundle dir) {
 
 ParseResult BDChainOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::Argument> entryArgs;
+  auto &builder = parser.getBuilder();
 
   // Symbol name, e.g. @my_chain
   StringAttr symNameAttr;
@@ -2235,6 +2187,15 @@ ParseResult BDChainOp::parse(OpAsmParser &parser, OperationState &result) {
     return argParseResult;
   }
 
+  // Store entry arg types in op attributes
+  SmallVector<::mlir::Type> entryArgTypes;
+  entryArgTypes.reserve(entryArgs.size());
+  for (auto entryArg : entryArgs) {
+    entryArgTypes.push_back(entryArg.type);
+  }
+  result.addAttribute(getEntryArgTypesAttrAttrName(result.name),
+                      TypeAttr::get(builder.getTupleType(entryArgTypes)));
+
   // BD Chain Body
   auto *body = result.addRegion();
   ParseResult bodyParseResult = parser.parseRegion(*body, entryArgs, false);
@@ -2246,6 +2207,7 @@ ParseResult BDChainOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 void BDChainOp::print(OpAsmPrinter &printer) {
+
   auto taskName =
       (*this)
           ->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
@@ -2253,14 +2215,15 @@ void BDChainOp::print(OpAsmPrinter &printer) {
   printer << ' ';
   printer.printSymbolName(taskName);
 
+  ArrayRef<Type> entryArgTypes = this->getEntryArgTypesAttr().getTypes();
   Region &body = getRegion();
-  auto argsIter = body.getArguments();
+  assert(body.getNumArguments() == entryArgTypes.size());
   printer << '(';
-  for (auto it = argsIter.begin(); it != argsIter.end(); ++it) {
-    if (it != argsIter.begin()) {
+  for (unsigned i = 0, n = entryArgTypes.size(); i < n; i++) {
+    if (i > 0) {
       printer << ", ";
     }
-    printer.printRegionArgument(*it);
+    printer.printRegionArgument(body.getArgument(i));
   }
   printer << ')';
 
@@ -2268,20 +2231,13 @@ void BDChainOp::print(OpAsmPrinter &printer) {
   printer.printRegion(body, false, true);
 }
 
-//===----------------------------------------------------------------------===//
-// ShimDMAAllocationOp
-//===----------------------------------------------------------------------===//
-
-ShimDMAAllocationOp ShimDMAAllocationOp::getForSymbol(DeviceOp device,
-                                                      llvm::StringRef symbol) {
-  auto alloc_ops = device.getOps<ShimDMAAllocationOp>();
-  for (auto it = alloc_ops.begin(); it != alloc_ops.end(); ++it) {
-    AIE::ShimDMAAllocationOp a = *it;
-    if (a.getSymName() == symbol) {
-      return a;
-    }
+LogicalResult BDChainOp::verify() {
+  Region &body = getRegion();
+  if (body.getNumArguments() != getEntryArgTypesAttr().getTypes().size()) {
+    return emitOpError(
+        "Number of region arguments and argument types mismatch.");
   }
-  return nullptr;
+  return success();
 }
 
 // Include implementations for custom attributes

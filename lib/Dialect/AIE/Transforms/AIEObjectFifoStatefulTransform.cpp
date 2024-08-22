@@ -229,42 +229,6 @@ struct AIEObjectFifoStatefulTransformPass
            isUsedInLinkOp;
   }
 
-  // Checks if via_shared_mem attribute of the objectfifo is set and if so
-  // tries to apply it. If the desired shared memory module is available to
-  // both producer and consumer then it will be used, otherwise a warning is
-  // emitted and the original shared memory module is used instead.
-  void checkAndApplyViaSharedMemAttribute(ObjectFifoCreateOp createOp,
-                                          int &share_direction) {
-    if (createOp.getViaSharedMem().has_value()) {
-      int desiredSharedTile = createOp.getViaSharedMem().value();
-      int desiredSharedModule = 1;
-      if (desiredSharedTile == 0)
-        desiredSharedModule = -1;
-      if (share_direction != desiredSharedModule) {
-        bool desiredSharedModuleIsShared = false;
-        int newShareDirection = 0;
-        for (auto consumerTile : createOp.getConsumerTiles()) {
-          if (auto consumerTileOp =
-                  dyn_cast<TileOp>(consumerTile.getDefiningOp()))
-            if (share_direction == -1)
-              ///   * -1 if the shared memory module is that of the first input
-              ///   tile,
-              ///   * 1 if it is that of the second input tile
-              desiredSharedModuleIsShared =
-                  isSharedMemory(consumerTileOp, createOp.getProducerTileOp(),
-                                 &newShareDirection);
-        }
-        if (desiredSharedModuleIsShared) {
-          if (share_direction == newShareDirection)
-            share_direction = (share_direction == -1) ? 1 : -1;
-          else
-            createOp->emitWarning("Memory module specified by `via_shared_mem` "
-                                  "is not available as shared memory module");
-        }
-      }
-    }
-  }
-
   /// Function to retrieve ObjectFifoLinkOp of ObjectFifoCreateOp,
   /// if it belongs to one.
   std::optional<ObjectFifoLinkOp> getOptionalLinkOp(ObjectFifoCreateOp op) {
@@ -301,11 +265,8 @@ struct AIEObjectFifoStatefulTransformPass
     std::vector<LockOp> locks;
     auto dev = op->getParentOfType<DeviceOp>();
     auto &target = dev.getTargetModel();
-    if (creation_tile.isShimTile()) {
-      numElem = 1;
-      if (!externalBuffersPerFifo[op].empty())
-        numElem = externalBuffersPerFifo[op].size();
-    }
+    if (creation_tile.isShimTile())
+      numElem = externalBuffersPerFifo[op].size();
     if (target.getTargetArch() == AIEArch::AIE1) {
       int of_elem_index = 0; // used to give objectFifo elements a symbolic name
       for (int i = 0; i < numElem; i++) {
@@ -701,52 +662,46 @@ struct AIEObjectFifoStatefulTransformPass
     if (auto linkOp = getOptionalLinkOp(op)) {
       if (objFifoLinks.find(*linkOp) != objFifoLinks.end()) {
         target = objFifoLinks[*linkOp];
-        auto srcOffsets = linkOp->getSrcOffsets();
-        auto dstOffsets = linkOp->getDstOffsets();
 
         if (linkOp->isJoin()) {
-          // compute offset and length
+          // find offset based on order of this op in join list
           isJoin = true;
           if (target == op) {
             acqNum = linkOp->getFifoIns().size();
             relNum = linkOp->getFifoIns().size();
           } else {
-            int i = 0;
             for (auto fifoIn : linkOp->getInputObjectFifos()) {
+              auto fifoType =
+                  llvm::cast<AIEObjectFifoType>(fifoIn.getElemType());
+              auto elemType = llvm::cast<MemRefType>(fifoType.getElementType());
               if (fifoIn.name() == op.name())
                 break;
-              i++;
+              extraOffset += elemType.getNumElements();
             }
-            extraOffset = *getConstantIntValue(srcOffsets[i]);
-            if (dims.getValue().empty())
-              lenOut = linkOp->getJoinTranferLengths()[i];
           }
         } else if (linkOp->isDistribute()) {
-          // compute offset and length
+          // find offset based on order of this op in distribute list
           isDistribute = true;
           if (target == op) {
             acqNum = linkOp->getFifoOuts().size();
             relNum = linkOp->getFifoOuts().size();
           } else {
-            int i = 0;
             for (auto fifoOut : linkOp->getOutputObjectFifos()) {
+              auto fifoType =
+                  llvm::cast<AIEObjectFifoType>(fifoOut.getElemType());
+              auto elemType = llvm::cast<MemRefType>(fifoType.getElementType());
               if (fifoOut.name() == op.name())
                 break;
-              i++;
+              extraOffset += elemType.getNumElements();
             }
-            extraOffset = *getConstantIntValue(dstOffsets[i]);
-            if (dims.getValue().empty())
-              lenOut = linkOp->getDistributeTranferLengths()[i];
           }
         } else {
           if (target != op) {
-            if (dims.getValue().empty()) {
-              auto targetFifo =
-                  llvm::cast<AIEObjectFifoType>(target.getElemType());
-              auto targetElemType =
-                  llvm::cast<MemRefType>(targetFifo.getElementType());
-              lenOut = targetElemType.getNumElements();
-            }
+            auto targetFifo =
+                llvm::cast<AIEObjectFifoType>(target.getElemType());
+            auto targetElemType =
+                llvm::cast<MemRefType>(targetFifo.getElementType());
+            lenOut = targetElemType.getNumElements();
           }
         }
 
@@ -787,21 +742,11 @@ struct AIEObjectFifoStatefulTransformPass
     Block *dmaBlock = builder.createBlock(endBlock);
     Block *bdBlock = builder.createBlock(endBlock);
 
-    // check for repeat count in objfifo dims
-    int repeatCount = 0;
-    if (!dims.getValue().empty()) {
-      auto highestStride = dims.getValue().begin()->getStride();
-      if (highestStride == 0) {
-        repeatCount = dims.getValue().begin()->getSize();
-        dims = AIE::BDDimLayoutArrayAttr::get(op->getContext(),
-                                              dims.getValue().drop_front(1));
-      }
-    }
-
     // create DMA channel
     builder.setInsertionPointToStart(dmaBlock);
     builder.create<DMAStartOp>(builder.getUnknownLoc(), channelDir,
-                               channelIndex, repeatCount, bdBlock, endBlock);
+                               channelIndex, /*repeatCount*/ 0, bdBlock,
+                               endBlock);
     if (lastDmaBlock != nullptr)
       lastDmaBlock->getTerminator()->setSuccessor(dmaBlock, 1);
 
@@ -859,20 +804,20 @@ struct AIEObjectFifoStatefulTransformPass
             }
           }
 
+          int unrollFactor =
+              computeLCM(objFifoSizes); // also counts original loop body
+          // if loop iterations < unrollFactor, unroll the loop fully
+          if (forLoop.getSingleLowerBound() && forLoop.getSingleUpperBound() &&
+              forLoop.getSingleStep()) {
+            int64_t tripCount =
+                constantTripCount(*(forLoop.getSingleLowerBound()),
+                                  *(forLoop.getSingleUpperBound()),
+                                  *(forLoop.getSingleStep()))
+                    .value_or(0);
+            if (tripCount < unrollFactor)
+              unrollFactor = tripCount;
+          }
           if (found) {
-            int unrollFactor =
-                computeLCM(objFifoSizes); // also counts original loop body
-            // if loop iterations < unrollFactor, unroll the loop fully
-            if (forLoop.getSingleLowerBound() &&
-                forLoop.getSingleUpperBound() && forLoop.getSingleStep()) {
-              int64_t tripCount =
-                  constantTripCount(*(forLoop.getSingleLowerBound()),
-                                    *(forLoop.getSingleUpperBound()),
-                                    *(forLoop.getSingleStep()))
-                      .value_or(0);
-              if (tripCount < unrollFactor)
-                unrollFactor = tripCount;
-            }
             if (failed(mlir::loopUnrollByFactor(forLoop, unrollFactor))) {
               forLoop.emitOpError()
                   << "could not be unrolled with unrollFactor: " << unrollFactor
@@ -1163,15 +1108,10 @@ struct AIEObjectFifoStatefulTransformPass
                               createOp.getProducerTile());
 
       // if split, the necessary size for producer fifo might change
-      if (shared) {
-        checkAndApplyViaSharedMemAttribute(createOp, share_direction);
+      if (shared)
         createObjectFifoElements(builder, lockAnalysis, createOp,
                                  share_direction);
-      } else {
-        if (createOp.getViaSharedMem().has_value())
-          createOp->emitWarning("No access to shared memory module; ignoring "
-                                "`via_shared_mem`");
-
+      else {
         if (isa<ArrayAttr>(createOp.getElemNumber()))
           createOp.setElemNumberAttr(
               builder.getI32IntegerAttr(createOp.size()));
@@ -1335,27 +1275,75 @@ struct AIEObjectFifoStatefulTransformPass
 
         // check how many elements have been released in between this AcquireOp
         // and the previous one
-        // !!! operations may not be in the same block !!!
         int numRel = 0;
         for (auto relOp : releaseOps[{op, portNum}]) {
-          Operation *acqBlockDefOp = acquireOp.getOperation();
-          do {
-            Operation *relBlockDefOp = relOp.getOperation();
-            do {
-              if (acqBlockDefOp->getBlock() == relBlockDefOp->getBlock()) {
-                if (relBlockDefOp->isBeforeInBlock(acqBlockDefOp)) {
+          // TODO: operations may not be in the same block: currently only
+          // support one block level of difference
+
+          if (ObjectFifoCreateOp otherOp = relOp.getObjectFifo();
+              op == otherOp) {
+            // if they are already in the same block, check if releaseOp
+            // happened before
+            if (acquireOp.getOperation()->getBlock() ==
+                relOp.getOperation()->getBlock()) {
+              if (!acquireOp->isBeforeInBlock(relOp)) {
+                releaseOps[{op, portNum}].erase(
+                    releaseOps[{op, portNum}].begin());
+                // to ensure that we do not account
+                // the ReleaseOps again later,
+                // after the subview is created
+                numRel += relOp.relNumber();
+              }
+            } else {
+
+              // else, check if releaseOp happened before the block region
+              // with the acquireOp
+              if (Operation *acqBlockDefOp =
+                      acquireOp.getOperation()->getBlock()->getParentOp();
+                  relOp.getOperation()->getBlock() ==
+                  acqBlockDefOp->getBlock()) {
+                if (!acqBlockDefOp->isBeforeInBlock(relOp)) {
                   releaseOps[{op, portNum}].erase(
                       releaseOps[{op, portNum}]
                           .begin()); // to ensure that we do not account
-                  // the ReleaseOps again later,
-                  // after the subview is created
+                  // the ReleaseOps again later, after
+                  // the subview is created
                   numRel += relOp.relNumber();
                 }
+
+                // else, check if the block region with releaseOp happened
+                // before...
+              } else {
+
+                // ...the acquireOp
+                if (Operation *relBlockDefOp =
+                        relOp.getOperation()->getBlock()->getParentOp();
+                    acquireOp.getOperation()->getBlock() ==
+                    relBlockDefOp->getBlock()) {
+                  if (!acquireOp->isBeforeInBlock(relBlockDefOp)) {
+                    releaseOps[{op, portNum}].erase(
+                        releaseOps[{op, portNum}]
+                            .begin()); // to ensure that we do not account
+                    // the ReleaseOps again later,
+                    // after the subview is created
+                    numRel += relOp.relNumber();
+                  }
+
+                  // ...the block region with the acquireOp
+                } else if (acqBlockDefOp->getBlock() ==
+                           relBlockDefOp->getBlock()) {
+                  if (!acqBlockDefOp->isBeforeInBlock(relBlockDefOp)) {
+                    releaseOps[{op, portNum}].erase(
+                        releaseOps[{op, portNum}]
+                            .begin()); // to ensure that we do not account
+                    // the ReleaseOps again later,
+                    // after the subview is created
+                    numRel += relOp.relNumber();
+                  }
+                }
               }
-            } while ((relBlockDefOp = relBlockDefOp->getParentOp()) &&
-                     !isa<DeviceOp>(relBlockDefOp));
-          } while ((acqBlockDefOp = acqBlockDefOp->getParentOp()) &&
-                   !isa<DeviceOp>(acqBlockDefOp));
+            }
+          }
         }
 
         // track indices of elements to acquire

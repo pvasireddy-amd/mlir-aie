@@ -36,8 +36,6 @@ std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
 createAIEAssignRuntimeSequenceBDIDsPass();
 std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
 createAIEDMATasksToNPUPass();
-std::unique_ptr<mlir::OperationPass<AIE::DeviceOp>>
-createAIESubstituteShimDMAAllocationsPass();
 
 /// Generate the code for registering passes.
 #define GEN_PASS_REGISTRATION

@@ -9,8 +9,6 @@
 //
 // RUN: aie-opt --verify-diagnostics --aie-dma-tasks-to-npu %s 
 
-// This test ensures that the proper error is emitted if the user specifies an illegal offset in a dma_bd operation inside the runtime sequence.
-
 module {
   aie.device(npu1_4col) {
     %tile_0_0 = aie.tile(0, 0)

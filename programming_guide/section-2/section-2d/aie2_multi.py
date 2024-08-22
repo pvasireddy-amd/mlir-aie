@@ -53,11 +53,7 @@ def mlir_aie_design():
                     buffer_depth,
                     memRef_16_ty,
                 )
-            if n_cores > 1:
-                of_offsets = [16 * i for i in range(n_cores)]
-            else:
-                of_offsets = []
-            object_fifo_link(of_in, inX_fifo_names[0:n_cores], [], of_offsets)
+            object_fifo_link(of_in, inX_fifo_names[0:n_cores])
 
             # Output data movement
 
@@ -75,7 +71,7 @@ def mlir_aie_design():
                     buffer_depth,
                     memRef_16_ty,
                 )
-            object_fifo_link(outX_fifo_names[0:n_cores], of_out, of_offsets, [])
+            object_fifo_link(outX_fifo_names[0:n_cores], of_out)
 
             # Set up compute tiles
             for i in range(n_cores):

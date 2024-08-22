@@ -69,7 +69,7 @@ void appendSync(std::vector<uint32_t> &instructions, NpuSyncOp op) {
 
 void appendWrite32(std::vector<uint32_t> &instructions, NpuWrite32Op op) {
 
-  auto words = reserveAndGetTail(instructions, 3);
+  auto words = reserveAndGetTail(instructions, 6);
 
   if (op.getBuffer()) {
     op.emitOpError("Cannot translate symbolic address");
@@ -78,21 +78,24 @@ void appendWrite32(std::vector<uint32_t> &instructions, NpuWrite32Op op) {
 
   // XAIE_IO_WRITE
   words[0] = TXN_OPC_WRITE;
-  words[1] = op.getAddress();
+  words[1] = 0;
+  words[2] = op.getAddress();
   auto col = op.getColumn();
   auto row = op.getRow();
   if (col && row) {
     const AIETargetModel &tm = op->getParentOfType<DeviceOp>().getTargetModel();
-    words[1] = ((*col & 0xff) << tm.getColumnShift()) |
-               ((*row & 0xff) << tm.getRowShift()) | (words[1] & 0xFFFFF);
+    words[2] = ((*col & 0xff) << tm.getColumnShift()) |
+               ((*row & 0xff) << tm.getRowShift()) | (words[2] & 0xFFFFF);
   }
-  words[2] = op.getValue(); // Value
+  words[3] = 0;
+  words[4] = op.getValue();                   // Value
+  words[5] = words.size() * sizeof(uint32_t); // Operation Size
 }
 
 void appendMaskWrite32(std::vector<uint32_t> &instructions,
                        NpuMaskWrite32Op op) {
 
-  auto words = reserveAndGetTail(instructions, 4);
+  auto words = reserveAndGetTail(instructions, 7);
 
   if (op.getBuffer()) {
     op.emitOpError("Cannot translate symbolic address");
@@ -101,33 +104,38 @@ void appendMaskWrite32(std::vector<uint32_t> &instructions,
 
   // XAIE_IO_MASKWRITE
   words[0] = TXN_OPC_MASKWRITE;
-  words[1] = op.getAddress();
+  words[1] = 0;
+  words[2] = op.getAddress();
   auto col = op.getColumn();
   auto row = op.getRow();
   if (col && row) {
     const AIETargetModel &tm = op->getParentOfType<DeviceOp>().getTargetModel();
-    words[1] = ((*col & 0xff) << tm.getColumnShift()) |
-               ((*row & 0xff) << tm.getRowShift()) | (words[1] & 0xFFFFF);
+    words[2] = ((*col & 0xff) << tm.getColumnShift()) |
+               ((*row & 0xff) << tm.getRowShift()) | (words[2] & 0xFFFFF);
   }
-  words[2] = op.getValue(); // Value
-  words[3] = op.getMask();
+  words[3] = 0;
+  words[4] = op.getValue(); // Value
+  words[5] = op.getMask();
+  words[6] = words.size() * sizeof(uint32_t); // Operation Size
 }
 
 void appendAddressPatch(std::vector<uint32_t> &instructions,
                         NpuAddressPatchOp op) {
 
-  auto words = reserveAndGetTail(instructions, 6);
+  auto words = reserveAndGetTail(instructions, 12);
 
   // XAIE_IO_CUSTOM_OP_DDR_PATCH
   words[0] = TXN_OPC_DDR_PATCH;
   words[1] = words.size() * sizeof(uint32_t); // Operation Size
 
-  words[2] = op.getAddr();
+  words[6] = op.getAddr();
+  words[7] = 0;
 
-  words[3] = op.getArgIdx();
+  words[8] = op.getArgIdx();
+  words[9] = 0;
 
-  words[4] = op.getArgPlus();
-  words[5] = 0;
+  words[10] = op.getArgPlus();
+  words[11] = 0;
 }
 
 void appendBlockWrite(std::vector<uint32_t> &instructions, NpuBlockWriteOp op) {
@@ -164,21 +172,22 @@ void appendBlockWrite(std::vector<uint32_t> &instructions, NpuBlockWriteOp op) {
     return;
   }
 
-  auto words = reserveAndGetTail(instructions, data.size() + 3);
+  auto words = reserveAndGetTail(instructions, data.size() + 4);
 
   // XAIE_IO_BLOCKWRITE
   words[0] = TXN_OPC_BLOCKWRITE;
-  words[1] = op.getAddress();
+  words[1] = 0;
+  words[2] = op.getAddress();
   auto col = op.getColumn();
   auto row = op.getRow();
   if (col && row) {
     const AIETargetModel &tm = op->getParentOfType<DeviceOp>().getTargetModel();
-    words[1] = ((*col & 0xff) << tm.getColumnShift()) |
-               ((*row & 0xff) << tm.getRowShift()) | (words[1] & 0xFFFFF);
+    words[2] = ((*col & 0xff) << tm.getColumnShift()) |
+               ((*row & 0xff) << tm.getRowShift()) | (words[2] & 0xFFFFF);
   }
-  words[2] = words.size() * sizeof(uint32_t); // Operation Size
+  words[3] = words.size() * sizeof(uint32_t); // Operation Size
 
-  unsigned i = 3;
+  unsigned i = 4;
   for (auto d : data)
     words[i++] = d.getZExtValue();
 }
@@ -191,21 +200,13 @@ std::vector<uint32_t> xilinx::AIE::AIETranslateToNPU(ModuleOp module) {
 
   auto words = reserveAndGetTail(instructions, 4);
 
-  DeviceOp deviceOp = *module.getOps<DeviceOp>().begin();
-  const AIETargetModel &tm = deviceOp.getTargetModel();
-
   // setup txn header
-  uint8_t major = 1;
-  uint8_t minor = 0;
-  uint8_t devGen = 3;
-  uint8_t numRows = tm.rows();
-  uint8_t numCols = tm.columns();
-  uint8_t numMemTileRows = tm.getNumMemTileRows();
-  uint32_t count = 0;
-  words[0] = (numRows << 24) | (devGen << 16) | (minor << 8) | major;
-  words[1] = (numMemTileRows << 8) | numCols;
+  words[0] = 0x06030100;
+  words[1] = 0x00000105;
 
+  DeviceOp deviceOp = *module.getOps<DeviceOp>().begin();
   auto sequenceOps = deviceOp.getOps<AIEX::RuntimeSequenceOp>();
+  int count = 0;
   for (auto f : sequenceOps) {
     Block &entry = f.getBody().front();
     for (auto &o : entry) {
@@ -235,7 +236,7 @@ std::vector<uint32_t> xilinx::AIE::AIETranslateToNPU(ModuleOp module) {
 
   // write size fields of the txn header
   instructions[2] = count;
-  instructions[3] = instructions.size() * sizeof(uint32_t); // size of the txn
+  instructions[3] = instructions.size() * sizeof(uint32_t);
   return instructions;
 }
 
