@@ -22,7 +22,7 @@
 namespace xilinx::AIE {
 
 #define OVER_CAPACITY_COEFF 0.1
-#define USED_CAPACITY_COEFF 0.1
+#define USED_CAPACITY_COEFF 0.02
 #define DEMAND_COEFF 1.1
 #define DEMAND_BASE 1.0
 #define MAX_CIRCUIT_STREAM_CAPACITY 1
@@ -49,6 +49,8 @@ using SwitchboxConnect = struct SwitchboxConnect {
   std::vector<std::vector<int>> usedCapacity;
   // how many packet streams are actually using this Channel
   std::vector<std::vector<int>> packetFlowCount;
+  // only sharing the channel with the same packet group id
+  std::vector<std::vector<int>> packetGroupId;
 
   // resize the matrices to the size of srcPorts and dstPorts
   void resize() {
@@ -60,6 +62,7 @@ using SwitchboxConnect = struct SwitchboxConnect {
     usedCapacity.resize(srcPorts.size(), std::vector<int>(dstPorts.size(), 0));
     packetFlowCount.resize(srcPorts.size(),
                            std::vector<int>(dstPorts.size(), 0));
+    packetGroupId.resize(srcPorts.size(), std::vector<int>(dstPorts.size(), 0));
   }
 
   // update demand at the beginning of each dijkstraShortestPaths iteration
@@ -114,7 +117,7 @@ using PathEndPoint = struct PathEndPoint {
 };
 
 using Flow = struct Flow {
-  bool isPacketFlow;
+  int packetGroupId;
   PathEndPoint src;
   std::vector<PathEndPoint> dsts;
 };
