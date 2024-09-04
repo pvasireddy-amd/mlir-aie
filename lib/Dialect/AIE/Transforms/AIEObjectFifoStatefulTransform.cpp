@@ -783,8 +783,8 @@ struct AIEObjectFifoStatefulTransformPass
     return lcm;
   }
 
-  // Function that unrolls for-loops that contain objectFifo operations.
-  LogicalResult unrollForLoops(DeviceOp &device, OpBuilder &builder,
+  // Function that creates dynamic objectFifos.
+  LogicalResult dynamicObjectFifos(DeviceOp &device, OpBuilder &builder,
                                std::set<TileOp> objectFifoTiles) {
     for (auto coreOp : device.getOps<CoreOp>()) {
       if (objectFifoTiles.count(coreOp.getTileOp()) > 0) {
@@ -793,37 +793,77 @@ struct AIEObjectFifoStatefulTransformPass
           // when multiple fifos in same loop, must use the smallest
           // common multiplier as the unroll factor
           bool found = false;
-          std::set<int> objFifoSizes;
           Block *body = forLoop.getBody();
+          std::map<ObjectFifoCreateOp, int> fifoSizes;
+          std::map<ObjectFifoCreateOp, int> releaseCounters;
 
+          // Initialize maps with FIFO sizes and counters
           for (auto acqOp : body->getOps<ObjectFifoAcquireOp>()) {
             if (acqOp.getOperation()->getParentOp() == forLoop) {
               found = true;
               ObjectFifoCreateOp op = acqOp.getObjectFifo();
-              objFifoSizes.insert(op.size());
+              fifoSizes[op] = op.size();
+              releaseCounters[op] = 0;
             }
           }
 
-          int unrollFactor =
-              computeLCM(objFifoSizes); // also counts original loop body
-          // if loop iterations < unrollFactor, unroll the loop fully
-          if (forLoop.getSingleLowerBound() && forLoop.getSingleUpperBound() &&
-              forLoop.getSingleStep()) {
-            int64_t tripCount =
-                constantTripCount(*(forLoop.getSingleLowerBound()),
-                                  *(forLoop.getSingleUpperBound()),
-                                  *(forLoop.getSingleStep()))
-                    .value_or(0);
-            if (tripCount < unrollFactor)
-              unrollFactor = tripCount;
-          }
-          if (found) {
-            if (failed(mlir::loopUnrollByFactor(forLoop, unrollFactor))) {
-              forLoop.emitOpError()
-                  << "could not be unrolled with unrollFactor: " << unrollFactor
-                  << "\n";
-              return WalkResult::interrupt();
+          // Count release operations for each FIFO
+          for (auto relOp : body->getOps<ObjectFifoReleaseOp>()) {
+            if (relOp.getOperation()->getParentOp() == forLoop) {
+              ObjectFifoCreateOp op = relOp.getObjectFifo();
+              releaseCounters[op]++;
             }
+          }
+          auto loc = forLoop.getLoc();
+          
+          // If for Loop is found with objectFifos,
+          // convert the objectFifos into dynamic Fifos.
+          if(found){
+            OpBuilder builder = OpBuilder::atBlockBegin(body);
+            builder.setInsertionPointToStart(body);
+
+            // Need separate counters for each input and output?
+            auto zeroIndex = builder.create<arith::ConstantIndexOp>(loc, 0);
+            Value inputCounter = zeroIndex;
+            Value outputCounter = zeroIndex;
+            // Check if the loop already has the arguments?
+            
+            // Recreate for Loop as for Loop with iter_args
+            // and copy the body of the old loop
+            
+            // Number of subviews found inside the for loop equals
+            // the number of switch statements to be written
+            body->walk([&](ObjectFifoSubviewAccessOp accessOp) {
+              auto acqOp = accessOp.getSubview().getDefiningOp<ObjectFifoAcquireOp>();
+              ObjectFifoCreateOp op = acqOp.getObjectFifo();
+              // Create a switch for each subview access
+              auto maxIndex = builder.create<arith::ConstantIndexOp>(loc, fifoSizes[op]);
+              Value maxCounter = maxIndex;
+              Value switchIndex = builder.create<arith::RemSIOp>(loc, inputCounter, maxCounter);
+              unsigned caseRegionCounts = fifoSizes[op];
+              SmallVector<int64_t, 4> caseValues;
+              
+              for (int i= 0; i < fifoSizes[op]; ++i){
+                int j = i + accessOp.getIndex();
+                if(j >= fifoSizes[op])
+                  j = fifoSizes[op] - j;
+                caseValues.push_back(j);
+              }
+              auto cases = DenseI64ArrayAttr::get(builder.getContext(), caseValues);
+              auto switchOp = builder.create<scf::IndexSwitchOp>(loc, TypeRange({buffersPerFifo[op][0].getType()}), switchIndex, cases, caseRegionCounts);  
+              builder.createBlock(&switchOp.getDefaultRegion());
+              builder.create<scf::YieldOp>(switchOp.getLoc(), buffersPerFifo[op][accessOp.getIndex()].getResult());                         
+              for (int i= 0; i < fifoSizes[op]; ++i){
+                //Define cases
+                builder.setInsertionPoint(&switchOp.getCaseBlock(i),switchOp.getCaseBlock(i).begin());
+                builder.createBlock(&switchOp.getCaseRegions()[i]);
+                int bufferToBeAccesed = (accessOp.getIndex() + i)%fifoSizes[op];
+                builder.create<scf::YieldOp>(switchOp.getCaseRegions()[i].getLoc(), buffersPerFifo[op][bufferToBeAccesed].getResult());   
+              } 
+              loc = switchOp.getLoc();
+              builder.setInsertionPointAfter(switchOp);
+              return WalkResult::advance();
+            });
           }
           return WalkResult::advance();
         });
@@ -1188,7 +1228,7 @@ struct AIEObjectFifoStatefulTransformPass
     //===------------------------------------------------------------------===//
     // Unroll for loops
     //===------------------------------------------------------------------===//
-    if (failed(unrollForLoops(device, builder, objectFifoTiles))) {
+    if (failed(dynamicObjectFifos(device, builder, objectFifoTiles))) {
       signalPassFailure();
     }
 
