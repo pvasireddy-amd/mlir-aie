@@ -817,7 +817,6 @@ struct AIEObjectFifoStatefulTransformPass
           // convert the objectFifos into dynamic Fifos.
           if(found){
             std::map<ObjectFifoCreateOp, Value> counterMap;
-            std::map<ObjectFifoSubviewAccessOp, Value> bufferReplacers;
             OpBuilder builder(forLoop);
             builder.setInsertionPoint(forLoop);
 
@@ -879,7 +878,8 @@ struct AIEObjectFifoStatefulTransformPass
                 int bufferToBeAccesed = (accessOp.getIndex() + i)%fifoSizes[createOp];
                 builder.create<scf::YieldOp>(switchOp.getCaseRegions()[i].getLoc(), buffersPerFifo[createOp][bufferToBeAccesed].getResult());   
               }           
-              // NEED FIXING: Find all the function calls
+              // NEED FIXING: Find all the function calls to replace the arguments
+              // Not sure if anything else other than function calls also use the buffer inside the loop
               auto result = switchOp.getResult(0);
               for (auto callOp : newLoopBody->getOps<func::CallOp>()) {
                 for(unsigned i = 0; i<callOp.getNumOperands(); ++i){
@@ -891,8 +891,6 @@ struct AIEObjectFifoStatefulTransformPass
               loc = switchOp.getLoc();
               builder.setInsertionPointAfter(switchOp);
 
-            // Replace fifos in the rest of the loop body with the switch outputs accordingly.
-            // Where the op is being used, replace with the switch output.
               return WalkResult::advance();
             });
 
@@ -904,11 +902,14 @@ struct AIEObjectFifoStatefulTransformPass
               auto val = releaseCounters[op];
               Value release_val = builder.create<arith::ConstantIndexOp>(loc, val);
               counterMap[op] = builder.create<arith::AddIOp>(loc, counterMap[op], release_val);
-              // NEED FIXING: In printed mlir, it shows updated values as new values
+            }
+            counterVector.clear();
+            for(const auto &entry : counterMap){
+              counterVector.push_back(entry.second);
             }
             
             builder.setInsertionPointToEnd(newLoopBody);
-            builder.create<scf::YieldOp>(forLoopWithIterArgs.getLoc(), ValueRange(counterArrayRef));
+            builder.create<scf::YieldOp>(forLoopWithIterArgs.getLoc(), ValueRange(ArrayRef(counterVector)));
             forLoop.replaceAllUsesWith(forLoopWithIterArgs);
             forLoop.getResults().replaceAllUsesWith(forLoopWithIterArgs.getResults());
             // NEED FIXING: When I try to remove the forLoop without this, it crashes.
