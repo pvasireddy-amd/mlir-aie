@@ -14,6 +14,8 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_os_ostream.h"
 
+#include "llvm/ADT/MapVector.h"
+
 using namespace mlir;
 using namespace xilinx;
 using namespace xilinx::AIE;
@@ -47,9 +49,11 @@ LogicalResult DynamicTileAnalysis::runAnalysis(DeviceOp &device) {
                << " -> (" << dstCoords.col << ", " << dstCoords.row << ")"
                << stringifyWireBundle(dstPort.bundle) << dstPort.channel
                << "\n");
-    pathfinder->addFlow(srcCoords, srcPort, dstCoords, dstPort, false);
+    pathfinder->addFlow(srcCoords, srcPort, dstCoords, dstPort,
+                        /*isPktFlow*/ false, /*isPriorityFlow*/ false);
   }
 
+  // Control packet flows to be routed (as prioritized routings)
   for (PacketFlowOp pktFlowOp : device.getOps<PacketFlowOp>()) {
     Region &r = pktFlowOp.getPorts();
     Block &b = r.front();
@@ -73,10 +77,20 @@ LogicalResult DynamicTileAnalysis::runAnalysis(DeviceOp &device) {
                    << stringifyWireBundle(dstPort.bundle) << dstPort.channel
                    << "\n");
         // todo: support many-to-one & many-to-many?
-        pathfinder->addFlow(srcCoords, srcPort, dstCoords, dstPort, true);
+        bool priorityFlow =
+            pktFlowOp.getPriorityRoute()
+                ? *pktFlowOp.getPriorityRoute()
+                : false; // Flows such as control packet flows are routed in
+                         // priority, to ensure routing consistency.
+        pathfinder->addFlow(srcCoords, srcPort, dstCoords, dstPort,
+                            /*isPktFlow*/ true, priorityFlow);
       }
     }
   }
+
+  // Sort ctrlPktFlows into a deterministic order; concat ctrlPktFlows to flows
+  pathfinder->sortFlows(device.getTargetModel().columns(),
+                        device.getTargetModel().rows());
 
   // add existing connections so Pathfinder knows which resources are
   // available search all existing SwitchBoxOps for exising connections
@@ -283,19 +297,79 @@ void Pathfinder::initialize(int maxCol, int maxRow,
 // Add a flow from src to dst can have an arbitrary number of dst locations
 // due to fanout.
 void Pathfinder::addFlow(TileID srcCoords, Port srcPort, TileID dstCoords,
-                         Port dstPort, bool isPacketFlow) {
+                         Port dstPort, bool isPacketFlow, bool isPriorityFlow) {
   // check if a flow with this source already exists
-  for (auto &[isPkt, src, dsts] : flows) {
+  for (auto &[_, prioritized, src, dsts] : flows) {
     if (src.coords == srcCoords && src.port == srcPort) {
-      dsts.emplace_back(PathEndPoint{dstCoords, dstPort});
+      if (isPriorityFlow) {
+        prioritized = true;
+        dsts.emplace(dsts.begin(), PathEndPoint{dstCoords, dstPort});
+      } else
+        dsts.emplace_back(PathEndPoint{dstCoords, dstPort});
       return;
     }
   }
 
+  // Assign a group ID for packet flows
+  // any overlapping in source/destination will lead to the same group ID
+  // channel sharing will happen within the same group ID
+  // for circuit flows, group ID is always -1, and no channel sharing
+  int packetGroupId = -1;
+  if (isPacketFlow) {
+    bool found = false;
+    for (auto &[existingId, _, src, dsts] : flows) {
+      if (src.coords == srcCoords && src.port == srcPort) {
+        packetGroupId = existingId;
+        found = true;
+        break;
+      }
+      for (auto &dst : dsts) {
+        if (dst.coords == dstCoords && dst.port == dstPort) {
+          packetGroupId = existingId;
+          found = true;
+          break;
+        }
+      }
+      packetGroupId = std::max(packetGroupId, existingId);
+    }
+    if (!found) {
+      packetGroupId++;
+    }
+  }
   // If no existing flow was found with this source, create a new flow.
   flows.push_back(
-      Flow{isPacketFlow, PathEndPoint{srcCoords, srcPort},
+      Flow{packetGroupId, isPriorityFlow, PathEndPoint{srcCoords, srcPort},
            std::vector<PathEndPoint>{PathEndPoint{dstCoords, dstPort}}});
+}
+
+// Sort flows to (1) get deterministic routing, and (2) perform routings on
+// prioritized flows before others, for routing consistency on those flows.
+void Pathfinder::sortFlows(const int maxCol, const int maxRow) {
+  std::vector<Flow> priorityFlows;
+  std::vector<Flow> normalFlows;
+  for (auto f : flows) {
+    if (f.isPriorityFlow)
+      priorityFlows.push_back(f);
+    else
+      normalFlows.push_back(f);
+  }
+  std::sort(priorityFlows.begin(), priorityFlows.end(),
+            [maxCol, maxRow](const auto &lhs, const auto &rhs) {
+              int lhsUniqueID = lhs.src.coords.col;
+              lhsUniqueID += lhs.src.coords.row * maxCol;
+              lhsUniqueID += maxRow * maxCol;
+              lhsUniqueID += getWireBundleAsInt(lhs.src.port.bundle);
+              lhsUniqueID += AIE::getMaxEnumValForWireBundle();
+              lhsUniqueID += lhs.src.port.channel;
+              int rhsUniqueID = rhs.src.coords.col;
+              rhsUniqueID += rhs.src.coords.row * maxCol;
+              rhsUniqueID += maxRow * maxCol;
+              rhsUniqueID += getWireBundleAsInt(rhs.src.port.bundle);
+              rhsUniqueID += rhs.src.port.channel;
+              return lhsUniqueID < rhsUniqueID;
+            });
+  flows = priorityFlows;
+  flows.insert(flows.end(), normalFlows.begin(), normalFlows.end());
 }
 
 // Keep track of connections already used in the AIE; Pathfinder algorithm
@@ -437,9 +511,20 @@ Pathfinder::findPaths(const int maxIterations) {
     }
   }
 
+  // group flows based on packetGroupId
+  llvm::MapVector<int, std::vector<Flow>> groupedFlows;
+  for (auto &f : flows) {
+    if (groupedFlows.count(f.packetGroupId) == 0) {
+      groupedFlows[f.packetGroupId] = std::vector<Flow>();
+    }
+    groupedFlows[f.packetGroupId].push_back(f);
+  }
+
   int iterationCount = -1;
   int illegalEdges = 0;
+#ifndef NDEBUG
   int totalPathLength = 0;
+#endif
   do {
     // if reach maxIterations, throw an error since no routing can be found
     if (++iterationCount >= maxIterations) {
@@ -459,84 +544,106 @@ Pathfinder::findPaths(const int maxIterations) {
 
     // "rip up" all routes
     illegalEdges = 0;
+#ifndef NDEBUG
     totalPathLength = 0;
+#endif
     routingSolution.clear();
     for (auto &[_, sb] : graph) {
       for (size_t i = 0; i < sb.srcPorts.size(); i++) {
         for (size_t j = 0; j < sb.dstPorts.size(); j++) {
           sb.usedCapacity[i][j] = 0;
           sb.packetFlowCount[i][j] = 0;
+          sb.packetGroupId[i][j] = -1;
         }
       }
     }
 
     // for each flow, find the shortest path from source to destination
     // update used_capacity for the path between them
-    for (const auto &[isPkt, src, dsts] : flows) {
-      // Use dijkstra to find path given current demand from the start
-      // switchbox; find the shortest paths to each other switchbox. Output is
-      // in the predecessor map, which must then be processed to get
-      // individual switchbox settings
-      std::set<PathEndPoint> processed;
-      std::map<PathEndPoint, PathEndPoint> preds = dijkstraShortestPaths(src);
 
-      // trace the path of the flow backwards via predecessors
-      // increment used_capacity for the associated channels
-      SwitchSettings switchSettings;
-      processed.insert(src);
-      for (auto endPoint : dsts) {
-        if (endPoint == src) {
-          // route to self
-          switchSettings[src.coords].srcs.push_back(src.port);
-          switchSettings[src.coords].dsts.push_back(src.port);
+    for (const auto &[_, flows] : groupedFlows) {
+      for (const auto &[packetGroupId, _, src, dsts] : flows) {
+        // Use dijkstra to find path given current demand from the start
+        // switchbox; find the shortest paths to each other switchbox. Output is
+        // in the predecessor map, which must then be processed to get
+        // individual switchbox settings
+        std::set<PathEndPoint> processed;
+        std::map<PathEndPoint, PathEndPoint> preds = dijkstraShortestPaths(src);
+
+        // trace the path of the flow backwards via predecessors
+        // increment used_capacity for the associated channels
+        SwitchSettings switchSettings;
+        processed.insert(src);
+        for (auto endPoint : dsts) {
+          if (endPoint == src) {
+            // route to self
+            switchSettings[src.coords].srcs.push_back(src.port);
+            switchSettings[src.coords].dsts.push_back(src.port);
+          }
+          auto curr = endPoint;
+          // trace backwards until a vertex already processed is reached
+          while (!processed.count(curr)) {
+            auto &sb = graph[std::make_pair(preds[curr].coords, curr.coords)];
+            size_t i =
+                std::distance(sb.srcPorts.begin(),
+                              std::find(sb.srcPorts.begin(), sb.srcPorts.end(),
+                                        preds[curr].port));
+            size_t j = std::distance(
+                sb.dstPorts.begin(),
+                std::find(sb.dstPorts.begin(), sb.dstPorts.end(), curr.port));
+            assert(i < sb.srcPorts.size());
+            assert(j < sb.dstPorts.size());
+            if (packetGroupId >= 0 &&
+                (sb.packetGroupId[i][j] == -1 ||
+                 sb.packetGroupId[i][j] == packetGroupId)) {
+              for (size_t k = 0; k < sb.srcPorts.size(); k++) {
+                for (size_t l = 0; l < sb.dstPorts.size(); l++) {
+                  if (k == i || l == j) {
+                    sb.packetGroupId[k][l] = packetGroupId;
+                  }
+                }
+              }
+              sb.packetFlowCount[i][j]++;
+              // maximum packet stream sharing per channel
+              if (sb.packetFlowCount[i][j] >= MAX_PACKET_STREAM_CAPACITY) {
+                sb.packetFlowCount[i][j] = 0;
+                sb.usedCapacity[i][j]++;
+              }
+            } else {
+              sb.usedCapacity[i][j]++;
+            }
+            // if at capacity, bump demand to discourage using this Channel
+            // this means the order matters!
+            sb.bumpDemand(i, j);
+            if (preds[curr].coords == curr.coords) {
+              switchSettings[preds[curr].coords].srcs.push_back(
+                  preds[curr].port);
+              switchSettings[curr.coords].dsts.push_back(curr.port);
+            }
+            processed.insert(curr);
+            curr = preds[curr];
+          }
         }
-        auto curr = endPoint;
-        // trace backwards until a vertex already processed is reached
-        while (!processed.count(curr)) {
-          auto &sb = graph[std::make_pair(preds[curr].coords, curr.coords)];
-          size_t i =
-              std::distance(sb.srcPorts.begin(),
-                            std::find(sb.srcPorts.begin(), sb.srcPorts.end(),
-                                      preds[curr].port));
-          size_t j = std::distance(
-              sb.dstPorts.begin(),
-              std::find(sb.dstPorts.begin(), sb.dstPorts.end(), curr.port));
-          assert(i < sb.srcPorts.size());
-          assert(j < sb.dstPorts.size());
-          if (isPkt) {
-            sb.packetFlowCount[i][j]++;
-            // maximum packet stream per channel
-            if (sb.packetFlowCount[i][j] >= MAX_PACKET_STREAM_CAPACITY) {
+        // add this flow to the proposed solution
+        routingSolution[src] = switchSettings;
+      }
+      for (auto &[_, sb] : graph) {
+        for (size_t i = 0; i < sb.srcPorts.size(); i++) {
+          for (size_t j = 0; j < sb.dstPorts.size(); j++) {
+            // fix used capacity for packet flows
+            if (sb.packetFlowCount[i][j] > 0) {
               sb.packetFlowCount[i][j] = 0;
               sb.usedCapacity[i][j]++;
             }
-          } else {
-            sb.packetFlowCount[i][j] = 0;
-            sb.usedCapacity[i][j]++;
+            sb.bumpDemand(i, j);
           }
-          // if at capacity, bump demand to discourage using this Channel
-          // this means the order matters!
-          sb.bumpDemand(i, j);
-          if (preds[curr].coords == curr.coords) {
-            switchSettings[preds[curr].coords].srcs.push_back(preds[curr].port);
-            switchSettings[curr.coords].dsts.push_back(curr.port);
-          }
-          processed.insert(curr);
-          curr = preds[curr];
         }
       }
-      // add this flow to the proposed solution
-      routingSolution[src] = switchSettings;
     }
 
     for (auto &[_, sb] : graph) {
       for (size_t i = 0; i < sb.srcPorts.size(); i++) {
         for (size_t j = 0; j < sb.dstPorts.size(); j++) {
-          // fix used capacity for packet flows
-          if (sb.packetFlowCount[i][j] > 0) {
-            sb.packetFlowCount[i][j] = 0;
-            sb.usedCapacity[i][j]++;
-          }
           // check that every channel does not exceed max capacity
           if (sb.usedCapacity[i][j] > MAX_CIRCUIT_STREAM_CAPACITY) {
             sb.overCapacity[i][j]++;
@@ -551,10 +658,12 @@ Pathfinder::findPaths(const int maxIterations) {
                 << sb.usedCapacity[i][j] << ", demand = " << sb.demand[i][j]
                 << ", over_capacity_count = " << sb.overCapacity[i][j] << "\n");
           }
+#ifndef NDEBUG
           // calculate total path length (across switchboxes)
           if (sb.srcCoords != sb.dstCoords) {
             totalPathLength += sb.usedCapacity[i][j];
           }
+#endif
         }
       }
     }
@@ -566,14 +675,19 @@ Pathfinder::findPaths(const int maxIterations) {
                  << PathEndPoint.coords.row << "):\t");
       LLVM_DEBUG(llvm::dbgs() << switchSetting);
     }
-#endif
     LLVM_DEBUG(llvm::dbgs()
                << "\t\t---End findPaths iteration #" << iterationCount
                << " , illegal edges count = " << illegalEdges
                << ", total path length = " << totalPathLength << "---\n");
+#endif
   } while (illegalEdges >
            0); // continue iterations until a legal routing is found
 
   LLVM_DEBUG(llvm::dbgs() << "\t---End Pathfinder::findPaths---\n");
   return routingSolution;
+}
+
+// Get enum int value from WireBundle.
+int AIE::getWireBundleAsInt(WireBundle bundle) {
+  return static_cast<typename std::underlying_type<WireBundle>::type>(bundle);
 }

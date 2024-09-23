@@ -205,7 +205,7 @@ verifyStridesWraps(mlir::Operation *forOp, mlir::MemRefType referencedBufType,
   }
 
   for (int i = 0; i < 4; i++) {
-    // strides[0] == 1 is ok iff the tranfer size is a multiple of
+    // strides[0] == 1 is ok iff the transfer size is a multiple of
     // addressGranularity, which is checked below
     if (i == 0 && inputStrides[i] == 1)
       continue;
@@ -306,19 +306,19 @@ int64_t AIEX::NpuDmaMemcpyNdOp::getOffsetInBytes() {
       llvm::map_to_vector(llvm::reverse(getMixedOffsets()), [](OpFoldResult s) {
         return getConstantIntValue(s).value();
       });
-  size_t stride = 1;
+  llvm::SmallVector<int64_t, 4> strides =
+      llvm::map_to_vector(llvm::reverse(getMixedStrides()), [](OpFoldResult s) {
+        return getConstantIntValue(s).value();
+      });
   size_t offset = 0;
   MemRefType my_memref = getMemref().getType();
-  auto shape = my_memref.getShape();
-  size_t R = shape.size();
+  size_t R = offsets.size();
   size_t el_bit_width = my_memref.getElementTypeBitWidth();
   assert(el_bit_width % 8 == 0 &&
          "Expected Memref element bitwidth to be multiple of 8.");
   size_t S = el_bit_width / 8;
-  for (size_t i = 0; i < R; i++) {
-    offset += offsets[i] * stride * S;
-    stride *= shape[R - i - 1];
-  }
+  for (size_t i = 0; i < R; i++)
+    offset += offsets[i] * strides[i] * S;
   return offset;
 }
 
@@ -347,8 +347,9 @@ LogicalResult AIEX::NpuDmaMemcpyNdOp::verify() {
   if (buffer.getElementTypeBitWidth() > addressGranularity) {
     return emitOpError("Maximum element bit width allowed is ")
            << addressGranularity << "bits. ";
-  } else if ((buffer.getNumElements() * buffer.getElementTypeBitWidth()) <
-             addressGranularity) {
+  } else if (buffer.hasStaticShape() &&
+             (buffer.getNumElements() * buffer.getElementTypeBitWidth()) <
+                 addressGranularity) {
     return emitOpError("Minimum data transfer size required is ")
            << addressGranularity << "bits. ";
   }
@@ -532,16 +533,6 @@ LogicalResult AIEX::RuntimeSequenceOp::verify() {
     (*this)->emitOpError() << "must be inside AIE device operation.";
     return failure();
   }
-  auto seq_ops = device.getOps<AIEX::RuntimeSequenceOp>();
-  if (std::distance(seq_ops.begin(), seq_ops.end()) > 1) {
-    auto err = device.emitOpError()
-               << "Cannot have more than one runtime sequence per device.";
-    for (auto it = seq_ops.begin(); it != seq_ops.end(); ++it) {
-      AIEX::RuntimeSequenceOp seq_op = *it;
-      err.attachNote(seq_op.getLoc()) << "Sequence operation definition here.";
-    }
-    return failure();
-  }
   return success();
 }
 
@@ -555,6 +546,13 @@ std::optional<uint32_t> AIEX::DMAConfigureTaskOp::getFirstBdId() {
     return std::nullopt;
   }
   auto bd_ops = body.front().getOps<AIE::DMABDOp>();
+  if (bd_ops.empty() && body.front().getNumSuccessors() == 1) {
+    // Allow the first block to be empty and point to the entry point of the
+    // chain. This allows for specifying cyclying BD chains (infinite loops)
+    // within the constraints of MLIR syntax.
+    Block &chain_entry = *body.front().getSuccessor(0);
+    bd_ops = chain_entry.getOps<AIE::DMABDOp>();
+  }
   if (bd_ops.empty()) {
     return std::nullopt;
   }
@@ -622,7 +620,7 @@ LogicalResult AIEX::DMAStartBdChainOp::verify() {
   }
 
   auto actualArgTypes = getArgs().getTypes();
-  ArrayRef<Type> expectedArgTypes = chain.getEntryArgTypesAttr().getTypes();
+  auto expectedArgTypes = chain.getRegion().getArgumentTypes();
   if (actualArgTypes.size() != expectedArgTypes.size()) {
     return emitOpError("Number of arguments mismatches.");
   }
@@ -634,4 +632,22 @@ LogicalResult AIEX::DMAStartBdChainOp::verify() {
     }
   }
   return success();
+}
+
+//===----------------------------------------------------------------------===//
+// NpuControlPacketOp
+//===----------------------------------------------------------------------===//
+
+uint32_t AIEX::NpuControlPacketOp::getRowFromAddr() {
+  const auto &targetModel = AIE::getTargetModel(*this);
+  uint32_t addr = getAddress();
+  uint32_t rowInt = (addr >> targetModel.getRowShift()) & 0x1f;
+  return rowInt;
+}
+
+uint32_t AIEX::NpuControlPacketOp::getColumnFromAddr() {
+  const auto &targetModel = AIE::getTargetModel(*this);
+  uint32_t addr = getAddress();
+  uint32_t colInt = (addr >> targetModel.getColumnShift()) & 0x1f;
+  return colInt;
 }

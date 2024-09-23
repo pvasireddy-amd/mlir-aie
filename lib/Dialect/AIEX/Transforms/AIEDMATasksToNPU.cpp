@@ -17,6 +17,7 @@
 
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 using namespace mlir;
@@ -30,6 +31,11 @@ struct DMAStartTaskOpPattern : OpConversionPattern<DMAStartTaskOp> {
   matchAndRewrite(DMAStartTaskOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     DMAConfigureTaskOp task_op = op.getTaskOp();
+    if (!task_op) {
+      // Cannot rewrite this; probably points to a DMAStartTaskForOp,
+      // which we will lower once it has been rewritten into a DMAStartTaskOp.
+      return failure();
+    }
     AIE::TileOp tile = task_op.getTileOp();
     std::optional<uint32_t> first_bd_id = task_op.getFirstBdId();
     if (!first_bd_id) {
@@ -54,6 +60,9 @@ struct DMAAwaitTaskOpPattern : OpConversionPattern<DMAAwaitTaskOp> {
   matchAndRewrite(DMAAwaitTaskOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     DMAConfigureTaskOp task_op = op.getTaskOp();
+    if (!task_op) {
+      return failure();
+    }
     if (!task_op.getIssueToken()) {
       auto err = op.emitOpError(
           "Cannot wait on a BD that is not configured to issue a token.");
@@ -70,6 +79,14 @@ struct DMAAwaitTaskOpPattern : OpConversionPattern<DMAAwaitTaskOp> {
 };
 
 struct AIEDMATasksToNPUPass : AIEDMATasksToNPUBase<AIEDMATasksToNPUPass> {
+
+  bool shouldSkipBlock(Block &block) {
+    // Allow blocks in the input IR that contain nothing but a next_bd operation
+    // as the entry block. We will skip these blocks and not lower them to
+    // anything.
+    auto it = block.without_terminator();
+    return block.isEntryBlock() && it.begin() == it.end();
+  }
 
   LogicalResult verifyBdInBlock(Block &block) {
     auto bd_ops = block.getOps<AIE::DMABDOp>();
@@ -308,6 +325,9 @@ struct AIEDMATasksToNPUPass : AIEDMATasksToNPUBase<AIEDMATasksToNPUPass> {
     Region &body = op.getBody();
     for (auto it = body.begin(); it != body.end(); ++it) {
       Block &block = *it;
+      if (shouldSkipBlock(block)) {
+        continue;
+      }
       AIE::DMABDOp bd_op = getBdForBlock(block);
       if (AIE::NextBDOp next_bd_op =
               llvm::dyn_cast<AIE::NextBDOp>(block.getTerminator())) {
@@ -353,12 +373,14 @@ struct AIEDMATasksToNPUPass : AIEDMATasksToNPUBase<AIEDMATasksToNPUPass> {
     // Verify each BD block first; subsequent functions rely on them being
     // well-formed
     for (auto it = body.begin(); it != body.end(); ++it) {
+      if (shouldSkipBlock(*it)) {
+        continue;
+      }
       if (failed(verifyNoUnsupportedOpsInBlock(*it))) {
         return failure();
       }
       if (failed(verifyBdInBlock(*it))) {
         return failure();
-      } else {
       }
       if (failed(verifyOptionalLocksInBlock(*it))) {
         return failure();
@@ -373,6 +395,9 @@ struct AIEDMATasksToNPUPass : AIEDMATasksToNPUBase<AIEDMATasksToNPUPass> {
     // Lower all BDs
     for (auto it = body.begin(); it != body.end(); ++it) {
       Block &block = *it;
+      if (shouldSkipBlock(block)) {
+        continue;
+      }
       if (failed(rewriteSingleBD(builder, block, tile))) {
         return failure();
       }

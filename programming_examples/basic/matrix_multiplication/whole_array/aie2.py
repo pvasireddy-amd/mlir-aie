@@ -27,11 +27,15 @@ def main():
     argparser.add_argument("-k", type=int, default=64)
     argparser.add_argument("-n", type=int, default=32)
     argparser.add_argument("--n-aie-cols", type=int, choices=[1, 2, 4], default=4)
+    argparser.add_argument("--b-col-maj", type=int, choices=[0, 1], default=0)
     argparser.add_argument(
-        "--dtype_in", type=str, choices=["bf16", "i16"], default="i16"
+        "--dtype_in", type=str, choices=["bf16", "i8", "i16"], default="i16"
     )
     argparser.add_argument(
-        "--dtype_out", type=str, choices=["bf16", "i16", "f32", "i32"], default="i16"
+        "--dtype_out",
+        type=str,
+        choices=["bf16", "i8", "i16", "f32", "i32"],
+        default="i16",
     )
     args = argparser.parse_args()
     with mlir_mod_ctx() as ctx:
@@ -45,6 +49,7 @@ def main():
             args.n_aie_cols,
             args.dtype_in,
             args.dtype_out,
+            args.b_col_maj,
         )
         # print(ctx.module.operation.verify())
         print(ctx.module)
@@ -54,7 +59,7 @@ def ceildiv(a, b):
     return (a + b - 1) // b
 
 
-def my_matmul(M, K, N, m, k, n, n_aie_cols, dtype_in_str, dtype_out_str):
+def my_matmul(M, K, N, m, k, n, n_aie_cols, dtype_in_str, dtype_out_str, b_col_maj):
 
     n_aie_rows = 4
     n_aie_cores = n_aie_rows * n_aie_cols
@@ -62,11 +67,15 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols, dtype_in_str, dtype_out_str):
     dtype_in = None
     if dtype_in_str == "bf16":
         dtype_in = T.bf16
+    elif dtype_in_str == "i8":
+        dtype_in = T.i8
     elif dtype_in_str == "i16":
         dtype_in = T.i16
     dtype_out = None
     if dtype_out_str == "bf16":
         dtype_out = T.bf16
+    elif dtype_out_str == "i8":
+        dtype_out = T.i8
     elif dtype_out_str == "i16":
         dtype_out = T.i16
     elif dtype_out_str == "f32":
@@ -78,6 +87,10 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols, dtype_in_str, dtype_out_str):
         r = 4
         s = 8
         t = 4
+    elif dtype_in_str == "i8":
+        r = 4
+        s = 8
+        t = 8
     elif dtype_in_str == "i16":
         r = 4
         s = 4
@@ -107,6 +120,12 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols, dtype_in_str, dtype_out_str):
     assert k % s == 0
     assert n % t == 0
 
+    if b_col_maj:
+        # These assertions are probably too broad.
+        assert m % 32 == 0
+        assert k % 32 == 0
+        assert n % 32 == 0
+
     # If you get errors during CDO generation due to running out of program
     # memory, it may be because too much code is generated due to ObjectFIFO
     # loop unrollings. Reducing the depth to 1 here will work around that at
@@ -135,16 +154,14 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols, dtype_in_str, dtype_out_str):
         C_l1_memref_ty = T.memref(m, n, dtype_out())
 
         # AIE Core Function declarations
-        zero_scalar = external_func(
-            f"zero_scalar_{dtype_out_str}", inputs=[C_l1_memref_ty]
-        )
         zero = external_func(f"zero_{dtype_out_str}", inputs=[C_l1_memref_ty])
-        matmul_scalar = external_func(
-            f"matmul_scalar_{dtype_in_str}_{dtype_out_str}",
-            inputs=[A_l1_memref_ty, B_l1_memref_ty, C_l1_memref_ty],
+        matmul_vectorized_func_name = (
+            f"matmul_{dtype_in_str}_{dtype_out_str}"
+            if not b_col_maj
+            else f"matmul_{dtype_in_str}_{dtype_out_str}_b_col_maj"
         )
         matmul = external_func(
-            f"matmul_{dtype_in_str}_{dtype_out_str}",
+            matmul_vectorized_func_name,
             inputs=[A_l1_memref_ty, B_l1_memref_ty, C_l1_memref_ty],
         )
 
@@ -196,9 +213,15 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols, dtype_in_str, dtype_out_str):
             # tiles; distribute it along rows of AIE cores.
             start_row = col * n_A_tiles_per_shim
             stop_row = start_row + n_A_tiles_per_shim
+            if stop_row - start_row > 1:
+                of_offsets = [m * k * i for i in range(stop_row - start_row)]
+            else:
+                of_offsets = []
             object_fifo_link(
                 A_l3l2_fifos[col],
                 [A_l2l1_fifos[row] for row in range(start_row, stop_row)],
+                [],
+                of_offsets,
             )
 
         # Input B
@@ -218,12 +241,21 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols, dtype_in_str, dtype_out_str):
                 ],  # broadcast along one column
                 fifo_depth,
                 B_l1_memref_ty,
-                [
-                    (k // s, s * n),
-                    (n // t, t),
-                    (s, n),
-                    (t, 1),
-                ],
+                (
+                    [
+                        (k // s, s * n),
+                        (n // t, t),
+                        (s, n),
+                        (t, 1),
+                    ]
+                    if not b_col_maj
+                    else [
+                        (n // t, t * k),
+                        (k // s, s),
+                        (t, k),
+                        (s, 1),
+                    ]
+                ),
             )
             object_fifo_link(B_l3l2_fifos[col], B_l2l1_fifos[col])
 
@@ -250,8 +282,15 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols, dtype_in_str, dtype_out_str):
                     (t, 1),
                 ],
             )
+            if n_aie_rows > 1:
+                of_offsets = [m * n * i for i in range(n_aie_rows)]
+            else:
+                of_offsets = []
             object_fifo_link(
-                [C_l1l2_fifos[j][col] for j in range(n_aie_rows)], C_l2l3_fifos[col]
+                [C_l1l2_fifos[j][col] for j in range(n_aie_rows)],
+                C_l2l3_fifos[col],
+                of_offsets,
+                [],
             )  # join along one column
 
         # Set up compute tiles
@@ -403,14 +442,22 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols, dtype_in_str, dtype_out_str):
                             #     |0011    0011    |
                             #     |0011    0011    |
                             #      ----------------
-                            B_col_offset = col * n
+                            B_col_offset = col * n if not b_col_maj else col * n * K
                             npu_dma_memcpy_nd(
                                 metadata=B_l3l2_fifos[col].sym_name.value,
                                 bd_id=bd_id_base + 2 * tile_row + 2,
                                 mem=B,
                                 offsets=[0, 0, 0, B_col_offset],
-                                sizes=[N // n // n_aie_cols, K // k, k, n],
-                                strides=[n * n_aie_cols, k * N, N, 1],
+                                sizes=(
+                                    [N // n // n_aie_cols, K // k, k, n]
+                                    if not b_col_maj
+                                    else [N // n // n_aie_cols, K // k, n, k]
+                                ),
+                                strides=(
+                                    [n * n_aie_cols, k * N, N, 1]
+                                    if not b_col_maj
+                                    else [n * n_aie_cols * K, k, K, 1]
+                                ),
                             )
                     if tb > 0 or (tb == 0 and pingpong > 0):
                         for col in range(n_aie_cols):

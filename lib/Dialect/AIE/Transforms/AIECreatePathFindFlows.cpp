@@ -285,10 +285,13 @@ void AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder) {
 
   // Map from a port and flowID to
   DenseMap<std::pair<PhysPort, int>, SmallVector<PhysPort, 4>> packetFlows;
+  DenseMap<std::pair<PhysPort, int>, SmallVector<PhysPort, 4>> ctrlPacketFlows;
   SmallVector<std::pair<PhysPort, int>, 4> slavePorts;
   DenseMap<std::pair<PhysPort, int>, int> slaveAMSels;
-  // Map from a port to
-  DenseMap<PhysPort, Attribute> keepPktHeaderAttr;
+  // Flag to keep packet header at packet flow destination
+  DenseMap<PhysPort, BoolAttr> keepPktHeaderAttr;
+  // Map from tileID and master ports to flags labelling control packet flows
+  DenseMap<std::pair<PhysPort, int>, bool> ctrlPktFlows;
 
   for (auto tileOp : device.getOps<TileOp>()) {
     int col = tileOp.colIndex();
@@ -316,9 +319,10 @@ void AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder) {
         destPort = pktDest.port();
         destCoords = {destTile.colIndex(), destTile.rowIndex()};
         // Assign "keep_pkt_header flag"
-        if (pktFlowOp->hasAttr("keep_pkt_header"))
-          keepPktHeaderAttr[{destTile, destPort}] =
-              StringAttr::get(Op.getContext(), "true");
+        auto keep = pktFlowOp.getKeepPktHeader();
+        keepPktHeaderAttr[{destTile, destPort}] =
+            keep ? BoolAttr::get(Op.getContext(), *keep) : nullptr;
+
         TileID srcSB = {srcCoords.col, srcCoords.row};
         if (PathEndPoint srcPoint = {srcSB, srcPort};
             !analyzer.processedFlows[srcPoint]) {
@@ -342,6 +346,12 @@ void AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder) {
                             std::pair{connect, flowID}) ==
                   switchboxes[currTile].end())
                 switchboxes[currTile].push_back({connect, flowID});
+              // Assign "control packet flows" flag per switchbox, based on
+              // packet flow op attribute
+              auto ctrlPkt = pktFlowOp.getPriorityRoute();
+              ctrlPktFlows[{
+                  {analyzer.getTile(builder, curr.col, curr.row), dest},
+                  flowID}] = ctrlPkt ? *ctrlPkt : false;
             }
           }
         }
@@ -362,7 +372,10 @@ void AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder) {
       Port destPort = conn.dst;
       auto sourceFlow =
           std::make_pair(std::make_pair(tileOp, sourcePort), flowID);
-      packetFlows[sourceFlow].push_back({tileOp, destPort});
+      if (ctrlPktFlows[{{tileOp, destPort}, flowID}])
+        ctrlPacketFlows[sourceFlow].push_back({tileOp, destPort});
+      else
+        packetFlows[sourceFlow].push_back({tileOp, destPort});
       slavePorts.push_back(sourceFlow);
       LLVM_DEBUG(llvm::dbgs() << "flowID " << flowID << ':'
                               << stringifyWireBundle(sourcePort.bundle) << " "
@@ -403,11 +416,18 @@ void AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder) {
   auto getNewUniqueAmsel = [&](DenseMap<std::pair<Operation *, int>,
                                         SmallVector<Port, 4>>
                                    masterAMSels,
-                               Operation *tileOp) {
-    for (int i = 0; i < numMsels; i++)
-      for (int a = 0; a < numArbiters; a++)
-        if (!masterAMSels.count({tileOp, getAmselFromArbiterIDAndMsel(a, i)}))
-          return getAmselFromArbiterIDAndMsel(a, i);
+                               Operation *tileOp, bool isCtrlPkt) {
+    if (isCtrlPkt) { // Higher AMsel first
+      for (int i = numMsels - 1; i >= 0; i--)
+        for (int a = numArbiters - 1; a >= 0; a--)
+          if (!masterAMSels.count({tileOp, getAmselFromArbiterIDAndMsel(a, i)}))
+            return getAmselFromArbiterIDAndMsel(a, i);
+    } else { // Lower AMsel first
+      for (int i = 0; i < numMsels; i++)
+        for (int a = 0; a < numArbiters; a++)
+          if (!masterAMSels.count({tileOp, getAmselFromArbiterIDAndMsel(a, i)}))
+            return getAmselFromArbiterIDAndMsel(a, i);
+    }
     tileOp->emitOpError("tile op has used up all arbiter-msel combinations");
     return -1;
   };
@@ -425,16 +445,60 @@ void AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder) {
         return -1;
       };
 
-  std::vector<std::pair<std::pair<PhysPort, int>, SmallVector<PhysPort, 4>>>
-      sortedPacketFlows(packetFlows.begin(), packetFlows.end());
-
-  // To get determinsitic behaviour
-  std::sort(sortedPacketFlows.begin(), sortedPacketFlows.end(),
-            [](const auto &lhs, const auto &rhs) {
-              auto lhsFlowID = lhs.first.second;
-              auto rhsFlowID = rhs.first.second;
-              return lhsFlowID < rhsFlowID;
+  // Sorting the packet flows in order to get determinsitic amsel allocation;
+  // allocate amsels for control packet flows before others to ensure
+  // consistency in control packet flow overlay.
+  auto getUniqueIdPerFlowPerSB = [](int flowID, WireBundle srcBundle,
+                                    SmallVector<PhysPort, 4> dests) {
+    int totalNumOfWireBundles = AIE::getMaxEnumValForWireBundle();
+    int currMultiplier = totalNumOfWireBundles;
+    int uniqueId = flowID;
+    uniqueId += currMultiplier + getWireBundleAsInt(srcBundle);
+    currMultiplier += totalNumOfWireBundles;
+    for (auto dst : dests) {
+      uniqueId += currMultiplier;
+      uniqueId += getWireBundleAsInt(dst.second.bundle);
+      currMultiplier += totalNumOfWireBundles;
+    }
+    return uniqueId;
+  };
+  auto getSortedPacketFlows =
+      [&](DenseMap<std::pair<PhysPort, int>, SmallVector<PhysPort, 4>> pktFlows,
+          DenseMap<std::pair<PhysPort, int>, SmallVector<PhysPort, 4>>
+              ctrlPktFlows) {
+        std::vector<
+            std::pair<std::pair<PhysPort, int>, SmallVector<PhysPort, 4>>>
+            sortedpktFlows(pktFlows.begin(), pktFlows.end());
+        std::sort(
+            sortedpktFlows.begin(), sortedpktFlows.end(),
+            [getUniqueIdPerFlowPerSB](const auto &lhs, const auto &rhs) {
+              int lhsUniqueID = getUniqueIdPerFlowPerSB(
+                  lhs.first.second, lhs.first.first.second.bundle, lhs.second);
+              int rhsUniqueID = getUniqueIdPerFlowPerSB(
+                  rhs.first.second, rhs.first.first.second.bundle, rhs.second);
+              return lhsUniqueID < rhsUniqueID;
             });
+        std::vector<
+            std::pair<std::pair<PhysPort, int>, SmallVector<PhysPort, 4>>>
+            sortedctrlpktFlows(ctrlPktFlows.begin(), ctrlPktFlows.end());
+        std::sort(
+            sortedctrlpktFlows.begin(), sortedctrlpktFlows.end(),
+            [getUniqueIdPerFlowPerSB](const auto &lhs, const auto &rhs) {
+              int lhsUniqueID = getUniqueIdPerFlowPerSB(
+                  lhs.first.second, lhs.first.first.second.bundle, lhs.second);
+              int rhsUniqueID = getUniqueIdPerFlowPerSB(
+                  rhs.first.second, rhs.first.first.second.bundle, rhs.second);
+              return lhsUniqueID < rhsUniqueID;
+            });
+        sortedctrlpktFlows.insert(sortedctrlpktFlows.end(),
+                                  sortedpktFlows.begin(), sortedpktFlows.end());
+        return sortedctrlpktFlows;
+      };
+
+  std::vector<std::pair<std::pair<PhysPort, int>, SmallVector<PhysPort, 4>>>
+      sortedPacketFlows = getSortedPacketFlows(packetFlows, ctrlPacketFlows);
+
+  packetFlows.insert(ctrlPacketFlows.begin(), ctrlPacketFlows.end());
 
   // Check all multi-cast flows (same source, same ID). They should be
   // assigned the same arbiter and msel so that the flow can reach all the
@@ -502,7 +566,17 @@ void AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder) {
     if (!foundMatchedDest) {
       // This packet flow switchbox's output ports completely mismatches with
       // any existing amsel. Creating a new amsel.
-      amselValue = getNewUniqueAmsel(masterAMSels, tileOp);
+
+      // Check if any of the master ports have ever been used for ctrl pkts.
+      // Ctrl pkt (i.e. prioritized packet flow) amsel assignment follows a
+      // different strategy (see method below).
+      bool ctrlPktAMsel =
+          llvm::any_of(packetFlow.second, [&](PhysPort destPhysPort) {
+            Port port = destPhysPort.second;
+            return ctrlPktFlows[{{tileOp, port}, packetFlow.first.second}];
+          });
+
+      amselValue = getNewUniqueAmsel(masterAMSels, tileOp, ctrlPktAMsel);
       // Update masterAMSels with new amsel
       for (auto dest : packetFlow.second) {
         Port port = dest.second;
@@ -706,11 +780,9 @@ void AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder) {
         amsels.push_back(amselOps[msel]);
       }
 
-      auto msOp = builder.create<MasterSetOp>(builder.getUnknownLoc(),
-                                              builder.getIndexType(), bundle,
-                                              channel, amsels);
-      if (auto pktFlowAttrs = keepPktHeaderAttr[{tileOp, tileMaster}])
-        msOp->setAttr("keep_pkt_header", pktFlowAttrs);
+      builder.create<MasterSetOp>(
+          builder.getUnknownLoc(), builder.getIndexType(), bundle, channel,
+          amsels, keepPktHeaderAttr[{tileOp, tileMaster}]);
     }
 
     // Generate the packet rules
@@ -747,6 +819,19 @@ void AIEPathfinderPass::runOnPacketFlow(DeviceOp device, OpBuilder &builder) {
         packetrules = slaveRules[slave];
 
       Block &rules = packetrules.getRules().front();
+
+      // Verify ID mapping against all other rules of the same slave.
+      for (auto rule : rules.getOps<PacketRuleOp>()) {
+        auto verifyMask = rule.maskInt();
+        auto verifyValue = rule.valueInt();
+        if ((group.front().second & verifyMask) == verifyValue) {
+          rule->emitOpError("can lead to false packet id match for id ")
+              << ID << ", which is not supposed to pass through this port.";
+          rule->emitRemark("Please consider changing all uses of packet id ")
+              << ID << " to avoid deadlock.";
+        }
+      }
+
       builder.setInsertionPoint(rules.getTerminator());
       builder.create<PacketRuleOp>(builder.getUnknownLoc(), mask, ID, amsel);
     }

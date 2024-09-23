@@ -483,8 +483,21 @@ LogicalResult ObjectFifoCreateOp::verify() {
   }
 
   if (getProducerTileOp().isShimTile() && !getDimensionsToStream().empty()) {
-    return emitError("`toStream` data layout transformations are not supported "
-                     "on shim tile producers");
+    return emitError(
+        "`dimensionsToStream` data layout transformations are not supported "
+        "on shim tile producers");
+  }
+
+  if (getViaSharedMem().has_value()) {
+    if (getConsumerTiles().size() > 1)
+      return emitError(
+          "`via_shared_mem` can only be used in 1-to-1 object FIFOs");
+  }
+
+  if (getMemtileRepeat().has_value()) {
+    if (!getProducerTileOp().isMemTile())
+      return emitError("`memtile_repeat` can only be used with a mem tile "
+                       "producer");
   }
 
   return success();
@@ -502,7 +515,7 @@ ParseResult parseObjectFifoProducerTile(OpAsmParser &parser,
   std::vector<BDDimLayoutAttr> emptyDims = {};
   if (parser.parseOperand(operand))
     return failure();
-  if (succeeded(parser.parseOptionalKeyword("toStream"))) {
+  if (succeeded(parser.parseOptionalKeyword("dimensionsToStream"))) {
     if (parser.parseCustomAttributeWithFallback<BDDimLayoutArrayAttr>(
             dimensions)) {
       return failure();
@@ -519,7 +532,7 @@ void printObjectFifoProducerTile(OpAsmPrinter &printer, Operation *op,
                                  BDDimLayoutArrayAttr dimensions) {
   printer << operand;
   if (!dimensions.empty()) {
-    printer << " toStream ";
+    printer << " dimensionsToStream ";
     printer.printStrippedAttrOrType(dimensions);
   }
 }
@@ -541,7 +554,7 @@ ParseResult parseObjectFifoConsumerTiles(
     BDDimLayoutArrayAttr dimAttr =
         BDDimLayoutArrayAttr::get(parser.getContext(), {});
 
-    if (succeeded(parser.parseOptionalKeyword("fromStream"))) {
+    if (succeeded(parser.parseOptionalKeyword("dimensionsFromStream"))) {
       // If specified, parse actual data layout transform dimensions
       if (parser.parseCustomAttributeWithFallback<BDDimLayoutArrayAttr>(
               dimAttr)) {
@@ -568,7 +581,7 @@ void printObjectFifoConsumerTiles(OpAsmPrinter &printer, Operation *op,
     printer << tile;
     if (dimsPerTileAttr && tileIdx < dimsPerTileAttr.size() &&
         dimsPerTileAttr[tileIdx] && !dimsPerTileAttr[tileIdx].empty()) {
-      printer << " fromStream ";
+      printer << " dimensionsFromStream ";
       printer.printStrippedAttrOrType(dimsPerTileAttr[tileIdx]);
     }
     if (tileIdx < tiles.size() - 1) {
@@ -594,27 +607,21 @@ LogicalResult ObjectFifoLinkOp::verify() {
                      "shared tile between objectFifos");
 
   if (isJoin()) {
-    ObjectFifoCreateOp fifoOut = getOutputObjectFifos()[0];
-    auto elemType =
-        llvm::cast<AIEObjectFifoType>(fifoOut.getElemType()).getElementType();
-    int64_t outputSize = 1;
-    for (auto dim : elemType.getShape())
-      outputSize *= dim;
+    if (getFifoIns().size() != getSrcOffsets().size())
+      return emitOpError("number of provided src offsets must be equal "
+                         "to the number of input objectFifos");
 
-    int inputSize = 0;
-    for (auto fifoIn : getInputObjectFifos()) {
-      auto elemType =
-          llvm::cast<AIEObjectFifoType>(fifoIn.getElemType()).getElementType();
-      int64_t nextInputSize = 1;
-      for (int64_t dim : elemType.getShape())
-        nextInputSize *= dim;
-      inputSize += nextInputSize;
-    }
-    if (inputSize != outputSize)
-      return emitError("Total size of input objFifos in ObjectFifoLinkOp must "
-                       "be equal to size of output objFifo");
+    if (!getDstOffsets().empty())
+      return emitOpError("dst offsets should be empty for join");
 
   } else if (isDistribute()) {
+    if (getFifoOuts().size() != getDstOffsets().size())
+      return emitOpError("number of provided dst offsets must be equal "
+                         "to the number of output objectFifos");
+
+    if (!getSrcOffsets().empty())
+      return emitOpError("src offsets should be empty for distribute");
+
     ObjectFifoCreateOp fifoIn = getInputObjectFifos()[0];
     if (!fifoIn.getDimensionsToStream().empty()) {
       return emitOpError("currently does not support objectFifos with "
@@ -626,30 +633,29 @@ LogicalResult ObjectFifoLinkOp::verify() {
                            "dimensionsFromStreamPerConsumer.");
     }
 
-    auto elemType =
-        llvm::cast<AIEObjectFifoType>(fifoIn.getElemType()).getElementType();
-    int64_t inputSize = 1;
-    for (auto dim : elemType.getShape())
-      inputSize *= dim;
-
-    int outputSize = 0;
     for (auto fifoOut : getOutputObjectFifos()) {
       for (auto dims : fifoOut.getDimensionsFromStreamPerConsumer()) {
         if (!dims.empty())
           return emitOpError("currently does not support objectFifos with "
                              "dimensionsFromStreamPerConsumer.");
       }
-
-      auto elemType =
-          llvm::cast<AIEObjectFifoType>(fifoOut.getElemType()).getElementType();
-      int64_t nextOutputSize = 1;
-      for (int64_t dim : elemType.getShape())
-        nextOutputSize *= dim;
-      outputSize += nextOutputSize;
     }
-    if (outputSize != inputSize)
-      return emitError("Total size of output objFifos in ObjectFifoLinkOp must "
-                       "be equal to size of input objFifo");
+
+    std::vector<int> repeat_counts;
+    for (auto fifoOut : getOutputObjectFifos()) {
+      if (fifoOut.getMemtileRepeat().has_value())
+        repeat_counts.push_back(fifoOut.getMemtileRepeat().value());
+      else
+        repeat_counts.push_back(0);
+    }
+    for (auto repeat : repeat_counts)
+      if (repeat_counts[0] != repeat)
+        return emitError("repeat counts of output object FIFOs must be equal");
+
+  } else {
+    if (!getSrcOffsets().empty() && !getDstOffsets().empty())
+      return emitOpError("all offsets should be empty if there is no "
+                         "join or distribute");
   }
 
   return success();
@@ -711,6 +717,53 @@ std::vector<ObjectFifoCreateOp> ObjectFifoLinkOp::getOutputObjectFifos() {
     }
   }
   return outputObjFifos;
+}
+
+std::vector<int> ObjectFifoLinkOp::getJoinTransferLengths() {
+  std::vector<int> lengths;
+  if (isJoin()) {
+    auto fifoOut =
+        llvm::cast<AIEObjectFifoType>(getOutputObjectFifos()[0].getElemType());
+    auto elemTypeOut = llvm::cast<MemRefType>(fifoOut.getElementType());
+    int lenOut = elemTypeOut.getNumElements();
+    for (size_t i = 0; i < getFifoIns().size(); i++) {
+      int len = 0;
+      int offset = *getConstantIntValue(getSrcOffsets()[i]);
+      if (i == getFifoIns().size() - 1)
+        len = lenOut - *getConstantIntValue(getSrcOffsets()[i]);
+      else
+        len = *getConstantIntValue(getSrcOffsets()[i + 1]) - offset;
+      lengths.push_back(len);
+    }
+  }
+  return lengths;
+}
+
+std::vector<int> ObjectFifoLinkOp::getDistributeTransferLengths() {
+  std::vector<int> lengths;
+  if (isDistribute()) {
+    auto fifoIn =
+        llvm::cast<AIEObjectFifoType>(getInputObjectFifos()[0].getElemType());
+    auto elemTypeIn = llvm::cast<MemRefType>(fifoIn.getElementType());
+    int lenIn = elemTypeIn.getNumElements();
+    for (size_t i = 0; i < getFifoOuts().size(); i++) {
+      int offset = *getConstantIntValue(getDstOffsets()[i]);
+      int len = 0;
+      if (i == getFifoOuts().size() - 1)
+        len = lenIn - *getConstantIntValue(getDstOffsets()[i]);
+      else
+        len = *getConstantIntValue(getDstOffsets()[i + 1]) - offset;
+      lengths.push_back(len);
+    }
+  }
+  return lengths;
+}
+
+std::optional<int> ObjectFifoLinkOp::getRepeatCount() {
+  for (auto fifoOut : getOutputObjectFifos())
+    if (fifoOut.getMemtileRepeat().has_value())
+      return {fifoOut.getMemtileRepeat().value()};
+  return {};
 }
 
 //===----------------------------------------------------------------------===//
@@ -1111,6 +1164,27 @@ bool isLegalTileConnection(TileOp tile, const AIETargetModel &targetModel,
   auto dstChan = connectOp.getDestChannel();
   return targetModel.isLegalTileConnection(
       tile.colIndex(), tile.rowIndex(), srcBundle, srcChan, dstBundle, dstChan);
+}
+
+TileOp TileOp::getOrCreate(mlir::OpBuilder builder, DeviceOp device, int col,
+                           int row) {
+  TileOp tile = nullptr;
+  // Find matching predefined tile at device top level, ...
+  for (auto t : device.getOps<AIE::TileOp>()) {
+    if (t.getRow() == row && t.getCol() == col) {
+      tile = t;
+      break;
+    }
+  }
+  // ... or if undefined, create a new tile op
+  if (!tile) {
+    OpBuilder::InsertionGuard guard(builder);
+    mlir::Block &device_start_block = *device.getBodyRegion().begin();
+    builder.setInsertionPointToStart(&device_start_block);
+    tile = builder.create<TileOp>(builder.getUnknownLoc(),
+                                  builder.getIndexType(), col, row);
+  }
+  return tile;
 }
 
 //===----------------------------------------------------------------------===//
@@ -2173,7 +2247,6 @@ WireBundle getConnectingBundle(WireBundle dir) {
 
 ParseResult BDChainOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::Argument> entryArgs;
-  auto &builder = parser.getBuilder();
 
   // Symbol name, e.g. @my_chain
   StringAttr symNameAttr;
@@ -2196,15 +2269,6 @@ ParseResult BDChainOp::parse(OpAsmParser &parser, OperationState &result) {
     return argParseResult;
   }
 
-  // Store entry arg types in op attributes
-  SmallVector<::mlir::Type> entryArgTypes;
-  entryArgTypes.reserve(entryArgs.size());
-  for (auto entryArg : entryArgs) {
-    entryArgTypes.push_back(entryArg.type);
-  }
-  result.addAttribute(getEntryArgTypesAttrAttrName(result.name),
-                      TypeAttr::get(builder.getTupleType(entryArgTypes)));
-
   // BD Chain Body
   auto *body = result.addRegion();
   ParseResult bodyParseResult = parser.parseRegion(*body, entryArgs, false);
@@ -2216,7 +2280,6 @@ ParseResult BDChainOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 void BDChainOp::print(OpAsmPrinter &printer) {
-
   auto taskName =
       (*this)
           ->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
@@ -2224,15 +2287,14 @@ void BDChainOp::print(OpAsmPrinter &printer) {
   printer << ' ';
   printer.printSymbolName(taskName);
 
-  ArrayRef<Type> entryArgTypes = this->getEntryArgTypesAttr().getTypes();
   Region &body = getRegion();
-  assert(body.getNumArguments() == entryArgTypes.size());
+  auto argsIter = body.getArguments();
   printer << '(';
-  for (unsigned i = 0, n = entryArgTypes.size(); i < n; i++) {
-    if (i > 0) {
+  for (auto it = argsIter.begin(); it != argsIter.end(); ++it) {
+    if (it != argsIter.begin()) {
       printer << ", ";
     }
-    printer.printRegionArgument(body.getArgument(i));
+    printer.printRegionArgument(*it);
   }
   printer << ')';
 
@@ -2240,13 +2302,20 @@ void BDChainOp::print(OpAsmPrinter &printer) {
   printer.printRegion(body, false, true);
 }
 
-LogicalResult BDChainOp::verify() {
-  Region &body = getRegion();
-  if (body.getNumArguments() != getEntryArgTypesAttr().getTypes().size()) {
-    return emitOpError(
-        "Number of region arguments and argument types mismatch.");
+//===----------------------------------------------------------------------===//
+// ShimDMAAllocationOp
+//===----------------------------------------------------------------------===//
+
+ShimDMAAllocationOp ShimDMAAllocationOp::getForSymbol(DeviceOp device,
+                                                      llvm::StringRef symbol) {
+  auto alloc_ops = device.getOps<ShimDMAAllocationOp>();
+  for (auto it = alloc_ops.begin(); it != alloc_ops.end(); ++it) {
+    AIE::ShimDMAAllocationOp a = *it;
+    if (a.getSymName() == symbol) {
+      return a;
+    }
   }
-  return success();
+  return nullptr;
 }
 
 // Include implementations for custom attributes
