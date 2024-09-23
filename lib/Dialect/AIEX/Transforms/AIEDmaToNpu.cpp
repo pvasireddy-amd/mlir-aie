@@ -341,6 +341,13 @@ public:
 
     auto issue_token = BoolAttr::get(ctx, false);
     auto repeat_count = zero;
+    
+    auto d0_zero_before = zero;
+    auto d1_zero_before = zero;
+    auto d2_zero_before = zero;
+    auto d0_zero_after = zero;
+    auto d1_zero_after = zero;
+    auto d2_zero_after = zero;
 
     llvm::SmallVector<int64_t, 4> inputSizes = llvm::map_to_vector(
         llvm::reverse(op.getMixedSizes()),
@@ -448,6 +455,24 @@ public:
 
     // lock_acq_id
 
+    // d0_zero_before
+    d0_zero_before = IntegerAttr::get(i32ty, op.getD0ZeroBefore());
+
+    // d1_zero_before
+    d1_zero_before = IntegerAttr::get(i32ty, op.getD1ZeroBefore());
+
+    // d2_zero_before
+    d2_zero_before = IntegerAttr::get(i32ty, op.getD2ZeroBefore());
+
+    // d0_zero_after
+    d0_zero_after = IntegerAttr::get(i32ty, op.getD0ZeroAfter());
+
+    // d1_zero_after
+    d1_zero_after = IntegerAttr::get(i32ty, op.getD1ZeroAfter());
+
+    // d2_zero_after
+    d2_zero_after = IntegerAttr::get(i32ty, op.getD2ZeroAfter());
+
     // Set the issue_token
     issue_token = BoolAttr::get(ctx, op.getIssueToken());
     // Earlier, all S2MM channels were implicitly assumed to issue a token.
@@ -460,7 +485,9 @@ public:
         enable_packet, out_of_order_id, packet_id, packet_type, d0_size,
         d0_stride, d1_size, d1_stride, d2_stride, iteration_current,
         iteration_size, iteration_stride, next_bd, row, use_next_bd, valid_bd,
-        lock_rel_val, lock_rel_id, lock_acq_enable, lock_acq_val, lock_acq_id);
+        lock_rel_val, lock_rel_id, lock_acq_enable, lock_acq_val, lock_acq_id, 
+        d0_zero_before, d1_zero_before, d2_zero_before,
+        d0_zero_after, d1_zero_after, d2_zero_after);
 
     uint64_t addr = getBufferDescriptorAddressRegisterAddress(
         targetModel, op.getId(), col, 0);
@@ -582,6 +609,7 @@ public:
       words[7] |= (op.getLockAcqEnable() & 0x1) << 12;
       words[7] |= (op.getLockAcqVal() & 0xef) << 5;
       words[7] |= op.getLockAcqId() & 0xf;
+      std::cout<<"ShimTile: "<<words[5]<<std::endl;
     } else if (tm.isMemTile(op.getColumn(), op.getRow())) {
       bd_addr = (op.getColumn() << tm.getColumnShift()) |
                 (op.getRow() << tm.getRowShift()) | (0xA0000 + bd_id * 0x20);
@@ -593,6 +621,7 @@ public:
       words[0] |= op.getBufferLength() & 0x1ffff;
 
       // DMA_BDX_1
+      words[1] |= (op.getD0ZeroBefore() & 0x3F) << 26;
       words[1] |= (op.getNextBd() & 0x3f) << 20;
       words[1] |= (op.getUseNextBd() & 0x1) << 19;
       words[1] |= op.getBufferOffset() & 0x7ffff;
@@ -603,15 +632,20 @@ public:
 
       // DMA_BDX_3
       // TODO: Secure Access
+      words[3] |= (op.getD1ZeroBefore() & 0x1F) << 27;
       words[3] |= (op.getD1Size() & 0x3ff) << 17;
       words[3] |= op.getD1Stride() & 0x1ffff;
 
       // DMA_BDX_4
       // TODO: D2Size
+      words[4] |= (op.getD2ZeroBefore() & 0xF) << 27;
       words[4] |= op.getD2Stride() & 0x1ffff;
 
       // DMA_BDX_5
       // ToDO: D3Stride
+      words[5] |= (op.getD2ZeroAfter() & 0xF) << 28;
+      words[5] |= (op.getD1ZeroAfter() & 0x1F) << 23;
+      words[5] |= (op.getD0ZeroAfter() & 0x3F) << 17;
 
       // DMA_BDX_6
       words[6] |= (op.getIterationCurrent() & 0x3f) << 23;
@@ -625,6 +659,8 @@ public:
       words[7] |= (op.getLockAcqEnable() & 0x1) << 15;
       words[7] |= (op.getLockAcqVal() & 0x7f) << 8;
       words[7] |= op.getLockAcqId() & 0xff;
+
+      std::cout<<"MEMTile: "<<op.getD0ZeroAfter()<<", "<<words[5]<<std::endl;
     } else {
       // TODO: DMA BD configuration for Compute Tiles
       op->emitError("Run-time DMA configuration is supported only for "

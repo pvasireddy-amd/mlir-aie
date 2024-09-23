@@ -216,7 +216,7 @@ struct AIEDMATasksToNPUPass : AIEDMATasksToNPUBase<AIEDMATasksToNPUPass> {
   }
 
   LogicalResult rewriteSingleBD(OpBuilder &builder, Block &block,
-                                AIE::TileOp &tile) {
+                                AIE::TileOp &tile, uint32_t d0_zero_before) {
     AIE::DMABDOp bd_op = getBdForBlock(block);
     const auto &target_model = AIE::getTargetModel(bd_op);
     MemRefType buffer_type = bd_op.getBuffer().getType();
@@ -226,6 +226,11 @@ struct AIEDMATasksToNPUPass : AIEDMATasksToNPUBase<AIEDMATasksToNPUPass> {
     int64_t offset = bd_op.getOffsetInBytes();
     uint32_t len = bd_op.getLenInBytes();
     uint32_t len_addr_granularity = len * 8 / addr_granularity;
+    uint32_t d1_zero_before = 0;
+    uint32_t d2_zero_before = 0;
+    uint32_t d0_zero_after = 0;
+    uint32_t d1_zero_after = 0;
+    uint32_t d2_zero_after = 0;
 
     if (offset * 8 % addr_granularity != 0) {
       return bd_op->emitOpError("Offset must be aligned to ")
@@ -316,7 +321,9 @@ struct AIEDMATasksToNPUPass : AIEDMATasksToNPUBase<AIEDMATasksToNPUPass> {
         /*valid_bd=*/1,
         /* TODO: Locks */
         /*lock_rel_val=*/0, /*lock_rel_id=*/0, /*lock_acq_enable=*/0,
-        /*lock_acq_val=*/0, /*lock_ackq_id=*/0);
+        /*lock_acq_val=*/0, /*lock_ackq_id=*/0, d0_zero_before,
+        d1_zero_before, d2_zero_before, d0_zero_after,
+        d1_zero_after, d2_zero_after);
 
     return setAddressForSingleBD(builder, bd_op, tile);
   }
@@ -358,6 +365,9 @@ struct AIEDMATasksToNPUPass : AIEDMATasksToNPUBase<AIEDMATasksToNPUPass> {
   LogicalResult rewriteSingleDMAConfigureTaskOp(DMAConfigureTaskOp op) {
     OpBuilder builder(op);
     AIE::TileOp tile = op.getTileOp();
+    uint32_t d0_zero_before = op.getD0ZeroBefore();
+    //  task_op.getD1ZeroBefore(), task_op.getD2ZeroBefore(),
+        // task_op.getD0ZeroAfter(), task_op.getD1ZeroAfter(), task_op.getD2ZeroAfter(),
 
     if (!op.use_empty()) {
       auto err = op.emitOpError("Cannot lower while op still has uses.");
@@ -398,7 +408,7 @@ struct AIEDMATasksToNPUPass : AIEDMATasksToNPUBase<AIEDMATasksToNPUPass> {
       if (shouldSkipBlock(block)) {
         continue;
       }
-      if (failed(rewriteSingleBD(builder, block, tile))) {
+      if (failed(rewriteSingleBD(builder, block, tile, d0_zero_before))) {
         return failure();
       }
     }
