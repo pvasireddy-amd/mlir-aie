@@ -7,7 +7,7 @@
 // Copyright (C) 2023, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
-
+// Modified test.cpp
 #include <boost/program_options.hpp>
 #include <cstdint>
 #include <cstdlib>
@@ -167,18 +167,25 @@ int main(int argc, const char *argv[]) {
     std::cout << "Running Kernel." << std::endl;
   unsigned int opcode = 3;
   auto run = kernel(opcode, bo_instr, instr_v.size(), bo_inA, bo_inB, bo_out);
-  run.wait();
+  // run.wait();
+   ert_cmd_state r = run.wait();
+    if (r != ERT_CMD_STATE_COMPLETED) {
+      std::cout << "Kernel did not complete. Returned status: " << r << "\n";
+      return 1;
+    }
 
   bo_out.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
 
   uint32_t *bufOut = bo_out.map<uint32_t *>();
 
   int errors = 0;
-
-  for (uint32_t i = 0; i < N; i++) {
-    uint32_t ref = (i + 1);
+  if(*(bufOut) != 0)
+    errors++;
+  for (uint32_t i = 1; i < N; i++) {
+    uint32_t ref = i;
     if (*(bufOut + i) != ref) {
       errors++;
+      std::cout<<ref<<", "<<*(bufOut+i)<<std::endl;
     }
   }
 
