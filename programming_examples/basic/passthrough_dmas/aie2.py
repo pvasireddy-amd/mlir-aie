@@ -44,10 +44,21 @@ def my_passthrough():
             ComputeTile2 = tile(col, 2)
 
             # AIE-array data movement with object fifos
-            of_in = object_fifo("in", ShimTile, ComputeTile2, 2, memRef_ty)
-            of_out = object_fifo("out", ComputeTile2, ShimTile, 2, memRef_ty)
-            object_fifo_link(of_in, of_out)
-
+            
+            # Edges 
+            in1 = object_fifo("in", ShimTile, ComputeTile2, 2)
+            out1 = object_fifo("out", ShimTile, ComputeTile2, 2)
+            
+            #Buffer connected to certain edges
+            of_buf = Buffer({in1}, {out1}, [1024], T.i32(), "of_buf")
+            
+            #Operations for each edge
+            operations = Ops(in1, repeat_count, padding)
+            operations2 = Ops(out1, repeat_count, padding)
+            
+            #Complete container which will put the dataflow together : can make decision if it needs to be 
+            container = Container(of_buf, {operations}, {operations2})
+            
             # Set up compute tiles
 
             # Compute tile 2
