@@ -609,7 +609,7 @@ public:
       words[7] |= (op.getLockAcqEnable() & 0x1) << 12;
       words[7] |= (op.getLockAcqVal() & 0xef) << 5;
       words[7] |= op.getLockAcqId() & 0xf;
-      std::cout<<"ShimTile: "<<words[5]<<std::endl;
+
     } else if (tm.isMemTile(op.getColumn(), op.getRow())) {
       bd_addr = (op.getColumn() << tm.getColumnShift()) |
                 (op.getRow() << tm.getRowShift()) | (0xA0000 + bd_id * 0x20);
@@ -660,7 +660,6 @@ public:
       words[7] |= (op.getLockAcqVal() & 0x7f) << 8;
       words[7] |= op.getLockAcqId() & 0xff;
 
-      std::cout<<"MEMTile: "<<op.getD0ZeroAfter()<<", "<<words[5]<<std::endl;
     } else {
       // TODO: DMA BD configuration for Compute Tiles
       op->emitError("Run-time DMA configuration is supported only for "
