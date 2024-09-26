@@ -204,6 +204,32 @@ Example:
 | `dest` | index
 
 
+### `aiex.control_packet` (::xilinx::AIEX::NpuControlPacketOp)
+
+_AIE control packet_
+
+
+Syntax:
+
+```
+operation ::= `aiex.control_packet` attr-dict
+```
+
+The control_packet operation represents a low-level AIE control packet header
+and payload.
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>address</code></td><td>::mlir::IntegerAttr</td><td>32-bit unsigned integer attribute</td></tr>
+<tr><td><code>length</code></td><td>::mlir::IntegerAttr</td><td>32-bit signless integer attribute</td></tr>
+<tr><td><code>opcode</code></td><td>::mlir::IntegerAttr</td><td>32-bit signless integer attribute</td></tr>
+<tr><td><code>stream_id</code></td><td>::mlir::IntegerAttr</td><td>32-bit signless integer attribute</td></tr>
+<tr><td><code>data</code></td><td>::mlir::DenseI32ArrayAttr</td><td>i32 dense array attribute</td></tr>
+</table>
+
+
 ### `aiex.dma_await_task` (::xilinx::AIEX::DMAAwaitTaskOp)
 
 _Await Completion of a Previously Submitted DMA Task_
@@ -249,6 +275,8 @@ Once configured, a task can be submitted for execution using `aiex.dma_start_con
 
 Traits: `HasParent<RuntimeSequenceOp>`
 
+Interfaces: `OpAsmOpInterface`, `TileElement`
+
 #### Attributes:
 
 <table>
@@ -266,6 +294,36 @@ Traits: `HasParent<RuntimeSequenceOp>`
 | Operand | Description |
 | :-----: | ----------- |
 | `tile` | index
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | index
+
+
+### `aiex.dma_configure_task_for` (::xilinx::AIEX::DMAConfigureTaskForOp)
+
+_As dma_configure_task, but specify tile, direction and channel by reference to a Shim DMA allocation op_
+
+
+Syntax:
+
+```
+operation ::= `aiex.dma_configure_task_for` $alloc regions attr-dict
+```
+
+
+Traits: `HasParent<RuntimeSequenceOp>`
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>alloc</code></td><td>::mlir::FlatSymbolRefAttr</td><td>flat symbol reference attribute</td></tr>
+<tr><td><code>issue_token</code></td><td>::mlir::BoolAttr</td><td>bool attribute</td></tr>
+<tr><td><code>repeat_count</code></td><td>::mlir::IntegerAttr</td><td>32-bit signless integer attribute</td></tr>
+</table>
 
 #### Results:
 
@@ -315,6 +373,8 @@ Completion of the DMA task, i.e. the data transfer, can be awaited using `aiex.a
 
 Traits: `HasParent<RuntimeSequenceOp>`
 
+Interfaces: `OpAsmOpInterface`, `TileElement`
+
 #### Attributes:
 
 <table>
@@ -334,6 +394,43 @@ Traits: `HasParent<RuntimeSequenceOp>`
 | :-----: | ----------- |
 | `args` | variadic of any type
 | `tile` | index
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | index
+
+
+### `aiex.dma_start_bd_chain_for` (::xilinx::AIEX::DMAStartBdChainForOp)
+
+_As dma_start_bd_chain, but specify tile, direction and channel by reference to a Shim DMA allocation op_
+
+
+Syntax:
+
+```
+operation ::= `aiex.dma_start_bd_chain_for` $symbol `(` $args `)` `:` `(` type($args) `)` ` ` `for` ` ` $alloc attr-dict
+```
+
+
+Traits: `HasParent<RuntimeSequenceOp>`
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>symbol</code></td><td>::mlir::FlatSymbolRefAttr</td><td>flat symbol reference attribute</td></tr>
+<tr><td><code>alloc</code></td><td>::mlir::FlatSymbolRefAttr</td><td>flat symbol reference attribute</td></tr>
+<tr><td><code>issue_token</code></td><td>::mlir::BoolAttr</td><td>bool attribute</td></tr>
+<tr><td><code>repeat_count</code></td><td>::mlir::IntegerAttr</td><td>32-bit signless integer attribute</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `args` | variadic of any type
 
 #### Results:
 
@@ -704,11 +801,11 @@ and **is always set to true for** `S2MM` channels.
 
 #### `metadata` -- Specifying Tile, Channel, Direction and Linking a `dma_memcpy_nd` to its Other Half
 
-The `metadata` attribute must point to a symbol referencing a 
-[`aie.shim_dma_allocation` operation](AIE.html#aiedma_bd-xilinxaiedmabdop).
+The `metadata` attribute must point to a symbol referencing a
+[`aie.shim_dma_allocation` operation](AIEDialect.html#aiedma_bd-xilinxaiedmabdop).
 The tile coordinates of the DMA to configure, the channel number and the direction (`MM2S` or `S2MM`) are taken from this operation.
 
-To connect the DMA to its other half (i.e. a `MM2S` DMA to its receiving end and a `S2MM` to the sending end), 
+To connect the DMA to its other half (i.e. a `MM2S` DMA to its receiving end and a `S2MM` to the sending end),
 the user must configure a flow (`aie.flow`) between the tile and channel referenced in the `aie.shim_dma_allocation` and the corresponding other end.
 
 When using ObjectFIFOs, the `aie.shim_dma_allocation` operations and the `aie.flows` are generated automatically.
@@ -719,13 +816,13 @@ The symbol of the `aie.objectfifo` (create) operation can be used directly in `m
 When the `dma_memcpy_nd` operation executes, it immediately reprograms the buffer descriptor with ID `bd_id` on tile (`x`, `y`), even if that buffer descriptor is currently executing.
 Without proper synchronization, this inevitably leads to nondeterministic results.
 
-Programming a buffer descriptor that is not currently executing is harmless. 
+Programming a buffer descriptor that is not currently executing is harmless.
 Thus, the first `dma_memcpy_nd` call for each `bd_id` requires no synchronization.
 
-However, if you wish to later re-use a `bd_id` on the same tile, you must wait for the previous buffer descriptor to complete. 
+However, if you wish to later re-use a `bd_id` on the same tile, you must wait for the previous buffer descriptor to complete.
 The `sync` or `dma_wait` operations can be used for this.
 
-`sync` blocks until it receives a _task completion token_ (TCT). 
+`sync` blocks until it receives a _task completion token_ (TCT).
 To properly synchronize, you must thus configure your BD to issue a TCT using the `issue_token` attribute, then wait on that token before reusing the BD.
 
 `dma_wait` is a convenience operation that lowers to the corresponding `sync` operation for the refrenced symbol.
@@ -736,15 +833,15 @@ For example, if you have input and output BDs on the shim, and you know the core
 #### Data Layout Transformations
 
 The `sizes` and `strides` attributes describe a data layout transformation to be performed by the DMA.
-These transformations are described in more depth in the documentation for the 
-[`aie.dma_bd` operation](AIE.html#aiedma_bd-xilinxaiedmabdop).
-Note that the syntax here differs from that of the `dma_bd` operation: 
+These transformations are described in more depth in the documentation for the
+[`aie.dma_bd` operation](AIEDialect.html#aiedma_bd-xilinxaiedmabdop).
+Note that the syntax here differs from that of the `dma_bd` operation:
 offsets and strides are given as separate arrays instead of tuples.
 
 The `offsets` array is used to calculate a static offset into the memref.
-Each offset in the array is understood in relation to the shape of the memref; 
-the lowest-dimension `offset` is a direct offset in units of memref element type, and the higher dimensions are multiplied by the size of the memref in those dimensions. 
-Note that this is for convenience of the user only. 
+Each offset in the array is understood in relation to the shape of the memref;
+the lowest-dimension `offset` is a direct offset in units of memref element type, and the higher dimensions are multiplied by the size of the memref in those dimensions.
+Note that this is for convenience of the user only.
 The hardware only supports a single static offset, and this offset is calculated at compile time.
 Thus, all offsets can be equivalently expressed with the lowest dimension only.
 
@@ -799,7 +896,7 @@ operation ::= `aiex.npu.dma_wait` attr-dict
 The NpuDmaWaitOp blocks until the DMA referenced through `symbol` completes execution
 and issues a task-complete-token (TCT).
 
-`symbol` is a reference to a `aie.shim_dma_allocation`, which contains information about the column, channel and channel direction on which to wait for a TCT. 
+`symbol` is a reference to a `aie.shim_dma_allocation`, which contains information about the column, channel and channel direction on which to wait for a TCT.
 The `aie.shim_dma_allocation` may be generated from an ObjectFIFO, in which case you can directly pass the ObjectFIFO symbol refrence.
 `npu.dma_wait` will be lowered to the corresponding `npu.sync` operation using the information from `symbol`.
 
