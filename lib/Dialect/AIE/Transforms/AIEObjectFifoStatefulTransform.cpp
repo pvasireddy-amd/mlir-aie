@@ -166,7 +166,7 @@ struct AIEObjectFifoStatefulTransformPass
       *share_direction = 1;
     else
       *share_direction = 0;
-
+    std::cout<<leftShared<<", "<<rightShared<<", "<<(leftShared||rightShared)<<std::endl;
     return leftShared || rightShared;
   }
 
@@ -181,8 +181,9 @@ struct AIEObjectFifoStatefulTransformPass
     bool atLeastOneConsumerWantsTransform = false;
     bool isUsedInLinkOp = false;
 
-    if (createOp.getVia_DMA())
+    if (createOp.getVia_DMA()){
       return true;
+    }
 
     if (createOp.getConsumerTiles().size() == 1 &&
         createOp.getDimensionsToStream().empty()) {
@@ -218,13 +219,32 @@ struct AIEObjectFifoStatefulTransformPass
 
     // Only test for this objfifo belonging to a LinkOp if we are in the shared
     // memory case; otherwise, we will return `true` in any case.
+
+    bool isLinkProvidingSharedMemory = false;
     if (hasSharedMemory) {
       if (auto linkOp = getOptionalLinkOp(createOp)) {
         splitBecauseLink.push_back(createOp);
-        isUsedInLinkOp = true;
+
+        int share_dir = 0;
+        if(!linkOp->isDistribute() && !linkOp->isJoin()){
+          TileOp producerTile = createOp.getProducerTileOp();
+          if(auto consumerTile = createOp.getConsumerTiles().front().getDefiningOp()){
+          if(auto consumerTileOp = dyn_cast<TileOp>(consumerTile)){
+            isLinkProvidingSharedMemory = isSharedMemory(producerTile, consumerTileOp, &share_dir);
+          }
+          }
+          if(createOp.getViaSharedMem().has_value() && isLinkProvidingSharedMemory){
+            checkAndApplyViaSharedMemAttribute(createOp, share_dir);
+            if(share_direction == share_dir)
+              isUsedInLinkOp = false;
+            else 
+              isUsedInLinkOp = true;
+          }
+        }
+        else
+          isUsedInLinkOp = true;
       }
     }
-
     return !hasSharedMemory || atLeastOneConsumerWantsTransform ||
            isUsedInLinkOp;
   }
@@ -238,8 +258,11 @@ struct AIEObjectFifoStatefulTransformPass
     if (createOp.getViaSharedMem().has_value()) {
       int desiredSharedTile = createOp.getViaSharedMem().value();
       int desiredSharedModule = 1;
+      std::cout<<"Desired Tile: "<<desiredSharedTile<<std::endl;
       if (desiredSharedTile == 0)
         desiredSharedModule = -1;
+
+      std::cout<<"Desired Module: "<<desiredSharedModule<<","<<share_direction<<std::endl;
       if (share_direction != desiredSharedModule) {
         bool desiredSharedModuleIsShared = false;
         int newShareDirection = 0;
@@ -1240,7 +1263,9 @@ struct AIEObjectFifoStatefulTransformPass
         checkAndApplyViaSharedMemAttribute(createOp, share_direction);
         createObjectFifoElements(builder, lockAnalysis, createOp,
                                  share_direction);
+        std::cout<<"Shared"<<std::endl;
       } else {
+        std::cout<<"Nope"<<std::endl;
         if (createOp.getViaSharedMem().has_value())
           createOp->emitWarning("No access to shared memory module; ignoring "
                                 "`via_shared_mem`");
