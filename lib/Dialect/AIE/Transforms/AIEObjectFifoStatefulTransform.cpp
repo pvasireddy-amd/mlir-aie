@@ -1514,11 +1514,34 @@ struct AIEObjectFifoStatefulTransformPass
       //===----------------------------------------------------------------===//
       // Replace subview.access ops
       //===----------------------------------------------------------------===//
-      coreOp.walk([&](ObjectFifoSubviewAccessOp accessOp) {
+       coreOp.walk([&](ObjectFifoSubviewAccessOp accessOp) {
         auto acqOp = accessOp.getSubview().getDefiningOp<ObjectFifoAcquireOp>();
         if (ObjectFifoCreateOp op = acqOp.getObjectFifo();
             getOptionalLinkOp(op)) {
-          accessOp->emitOpError("currently cannot access objectFifo used in "
+              if(auto linkOp = getOptionalLinkOp(op)){
+                if(!linkOp->isDistribute() && !linkOp->isJoin()){
+                  for (auto consumerTile : op.getConsumerTiles()) {
+                    if (auto consumerTileOp =
+                      dyn_cast<TileOp>(consumerTile.getDefiningOp())){
+                        int *share_dir = 0;
+                      bool sharing = isSharedMemory(op.getProducerTileOp(), consumerTileOp, share_dir);
+                      if(sharing){   
+                        accessOp.getOutput().replaceAllUsesWith(
+                          subviews[acqOp][accessOp.getIndex()]->getBuffer());
+                      }
+                      else{
+                        accessOp->emitOpError("currently cannot access objectFifo used in "
+                                "ObjectFifoLinkOp");
+                      }
+                    }
+                  }
+                }
+                else
+                      accessOp->emitOpError("currently cannot access objectFifo used in "
+                                "ObjectFifoLinkOp");
+              }
+              else
+                accessOp->emitOpError("currently cannot access objectFifo used in "
                                 "ObjectFifoLinkOp");
           return;
         }
