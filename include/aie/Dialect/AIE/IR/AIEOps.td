@@ -1571,14 +1571,17 @@ def AIE_ShimDMAAllocationOp : AIE_Op<"shim_dma_allocation", [HasParent<"DeviceOp
         DMAChannelDir:$channel_dir,
         AIEI64Attr:$channel_index,
         AIEI64Attr:$col,
+        AIEI64Attr:$row,
         // If this is set we are using the PLIO in this ShimTile
-        DefaultValuedAttr<BoolAttr, "false">:$plio
+        DefaultValuedAttr<BoolAttr, "false">:$plio,
+        AIEI64Attr:$consumer_col,
+        AIEI64Attr:$consumer_row
   );
 
   let results = (outs);
 
   let assemblyFormat = [{
-    $sym_name `(` $channel_dir `,` $channel_index `,` $col `)` attr-dict
+    $sym_name `(` $channel_dir `,` $channel_index `,` $col `,` $row `)` attr-dict
   }];
 
   let extraClassDeclaration = [{

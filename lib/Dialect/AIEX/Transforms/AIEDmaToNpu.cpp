@@ -228,12 +228,21 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
 
     auto column = rewriter.getI32IntegerAttr(op.getColumn());
-    auto row = rewriter.getI32IntegerAttr(0);
+    auto row = rewriter.getI32IntegerAttr(op.getRow());
+
+    const auto &tm = AIE::getTargetModel(op);
 
     // control packet for issuing token
     if (op.getIssueToken()) {
-      uint32_t ctrl_offset =
+      uint32_t ctrl_offset;
+      if(tm.isShimNOCTile(op.getColumn(), op.getRow())) 
+        ctrl_offset  =
           op.getDirection() == AIE::DMAChannelDir::MM2S ? 0x1D210 : 0x1D200;
+      else if(tm.isMemTile(op.getColumn(), op.getRow()))
+        ctrl_offset  =
+          op.getDirection() == AIE::DMAChannelDir::MM2S ? 0xA0634 : 0xA0604;
+      else
+        op.emitError("Runtime DMA is currently supported only for ShimTile sand MemTiles");
       if (op.getChannel() == 1)
         ctrl_offset += 0x8;
       uint32_t controller_id = 0;
@@ -255,22 +264,20 @@ public:
 
     // the offset of the task queue register in the tile
     uint32_t queue_offset;
-    auto device = op->getParentOfType<AIE::DeviceOp>();
-    const AIE::AIETargetModel &target_model = device.getTargetModel();
-    if(target_model.isShimNOCTile(op.getColumn(), op.getRow())){
-      if (op.getDirection() == AIE::DMAChannelDir::MM2S)
-        queue_offset = 0x1D214;
-      else
-        queue_offset = 0x1D204;
+    if(tm.isShimNOCTile(op.getColumn(), op.getRow())){
+    if (op.getDirection() == AIE::DMAChannelDir::MM2S)
+      queue_offset = 0x1D214;
+    else
+      queue_offset = 0x1D204;
     }
-    else if(target_model.isMemTile(op.getColumn(), op.getRow())){
-      if (op.getDirection() == AIE::DMAChannelDir::MM2S)
-        queue_offset = 0xA0634;
-      else
-        queue_offset = 0xA0604;
+    else if(tm.isMemTile(op.getColumn(), op.getRow())){
+    if (op.getDirection() == AIE::DMAChannelDir::S2MM) // Since I couldn't reverse it in ObjectFifo
+      queue_offset = 0xA0634;
+    else
+      queue_offset = 0xA0604;
     }
     else{
-      op->emitOpError("Currently run-time initialization of task queues is only supported for ShimTiles and MemTiles.");
+      op.emitError("Runtime DMA is currently supported only for ShimTiles and MemTiles");
     }
     if (op.getChannel() == 1)
       queue_offset += 0x8;
@@ -326,6 +333,19 @@ public:
     auto channelDir = infoOp->getChannelDir();
     bool isMM2S = channelDir == AIE::DMAChannelDir::MM2S;
     int col = infoOp->getCol();
+    int consumer_col = infoOp->getConsumerCol();
+    int consumer_row = infoOp->getConsumerRow();
+    bool mem_flag=0;
+    if(targetModel.isMemTile(consumer_col, consumer_row)){
+      mem_flag=1;
+    }
+    else if(targetModel.isMemTile(col,infoOp->getRow())){
+      std::cout<<"MemTile producer"<<std::endl;
+    }
+    else if(targetModel.isShimNOCTile(consumer_col, consumer_row)){
+      std::cout<<"ShimTile consumer"<<std::endl;
+      mem_flag = 1;
+    }
 
     // initialize fields to zero
     auto column = zero;
@@ -486,6 +506,22 @@ public:
         op->getLoc(), column, row, infoOp->getChannelDirAttr(),
         infoOp->getChannelIndexAttr(), issue_token, repeat_count, bd_id);
 
+    if(mem_flag){
+      column = IntegerAttr::get(i32ty, consumer_col);
+      row = IntegerAttr::get(i32ty, consumer_row);
+      rewriter.create<NpuWriteBdOp>(
+        op->getLoc(), column, bd_id, buffer_length, buffer_offset,
+        enable_packet, out_of_order_id, packet_id, packet_type, d0_size,
+        d0_stride, d1_size, d1_stride, d2_stride, iteration_current,
+        iteration_size, iteration_stride, next_bd, row, use_next_bd, valid_bd,
+        lock_rel_val, lock_rel_id, lock_acq_enable, lock_acq_val, lock_acq_id);
+      if(isMM2S)
+        issue_token = BoolAttr::get(ctx, true);
+        rewriter.create<NpuPushQueueOp>(
+          op->getLoc(), column, row, infoOp->getChannelDirAttr(),
+          infoOp->getChannelIndexAttr(), issue_token, repeat_count, bd_id);
+    }
+
     rewriter.eraseOp(op);
     return success();
   }
@@ -519,12 +555,21 @@ public:
       return op->emitError("couldn't find shim_dma_allocation op");
     }
 
+    const AIE::AIETargetModel &tm = dev.getTargetModel();
     // Create with `column_num == 1` and `row_num == 1` to check for a single
     // column and row. Row is always 0 for shim tiles.
-    (void)rewriter.replaceOpWithNewOp<NpuSyncOp>(
-        op, shimDmaAllocOp->getCol(), /* row */ 0,
+    if(tm.isMemTile(shimDmaAllocOp->getConsumerCol(), shimDmaAllocOp->getConsumerRow())){
+      (void)rewriter.replaceOpWithNewOp<NpuSyncOp>(
+        op, shimDmaAllocOp->getConsumerCol(), shimDmaAllocOp->getConsumerRow(),
         static_cast<uint32_t>(shimDmaAllocOp->getChannelDir()),
         shimDmaAllocOp->getChannelIndex(), 1, 1);
+    }
+    else{
+      (void)rewriter.replaceOpWithNewOp<NpuSyncOp>(
+        op, shimDmaAllocOp->getCol(), shimDmaAllocOp->getRow(),
+        static_cast<uint32_t>(shimDmaAllocOp->getChannelDir()),
+        shimDmaAllocOp->getChannelIndex(), 1, 1);
+    }
 
     return success();
   }
