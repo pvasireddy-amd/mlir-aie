@@ -291,8 +291,6 @@ public:
     if (op.getIssueToken())
       cmd |= 0x80000000;
 
-    auto column = rewriter.getI32IntegerAttr(op.getColumn());
-    auto row = rewriter.getI32IntegerAttr(op.getRow());
     rewriter.create<NpuWrite32Op>(op->getLoc(), queue_offset, cmd, nullptr,
                                   column, row);
     rewriter.eraseOp(op);
