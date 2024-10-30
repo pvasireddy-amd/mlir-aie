@@ -177,7 +177,7 @@ struct AIEObjectFifoStatefulTransformPass
   // the producer wants to use the multi-dimensional address generation
   // features of the DMA, if the objectFifo is part of a LinkOp, or if the
   // via_DMA attribute of the objectFifo is set.
-  bool requiresDMAs(ObjectFifoCreateOp createOp, int &share_direction) {
+  bool requiresDMAs(ObjectFifoCreateOp createOp, int &share_direction, bool &duplicates) {
     bool hasSharedMemory = false;
     bool atLeastOneConsumerWantsTransform = false;
     bool isUsedInLinkOp = false;
@@ -217,13 +217,12 @@ struct AIEObjectFifoStatefulTransformPass
         }
     }
 
-    // Only test for this objfifo belonging to a LinkOp if we are in the shared
-    // memory case; otherwise, we will return `true` in any case.
-    // if (hasSharedMemory) {
-    //   if (auto linkOp = getOptionalLinkOp(createOp)) {
-    //     splitBecauseLink.push_back(createOp);
-    //     isUsedInLinkOp = true;
-    bool isLinkProvidingSharedMemory = false;
+   // If there is a link between compute tiles connected
+   // via shared memory then the data is stored in shared memory 
+   // and accessed by both tiles without DMAs.
+   // This case is not valid if distribute or join is used with link.
+    duplicates = false;
+    bool isLinkViaSharedMemory = false;
     if (hasSharedMemory) {
       if (auto linkOp = getOptionalLinkOp(createOp)) {
         splitBecauseLink.push_back(createOp);
@@ -234,21 +233,49 @@ struct AIEObjectFifoStatefulTransformPass
           if (auto consumerTile =
                   createOp.getConsumerTiles().front().getDefiningOp()) {
             if (auto consumerTileOp = dyn_cast<TileOp>(consumerTile)) {
-              isLinkProvidingSharedMemory =
+              isLinkViaSharedMemory =
                   isSharedMemory(producerTile, consumerTileOp, &share_dir);
             }
           }
-          if (createOp.getViaSharedMem().has_value() &&
-              isLinkProvidingSharedMemory) {
+          // If there is a shared memory attribute set by the user, link figures out 
+          // if it can obey the request or not.
+            if (createOp.getViaSharedMem().has_value() &&
+              isLinkViaSharedMemory && createOp == linkOp->getOutputObjectFifos()[0]) {
             checkAndApplyViaSharedMemAttribute(createOp, share_dir);
-            if (share_direction == share_dir)
+            if (share_direction == share_dir){
+            // If different sizes are used across fifos involved in the link, 
+            // the default is each fifo on its respective tile.
+            // If there is a via_shared_mem attribute set to Consumer side,
+            // then default case still holds and communicated via DMAs.
+            // If the via_shared_mem attribute is set to Producer side,
+            // then both fifos are separately allocated on the shared memory of the Producer side.
+            // If fifos sizes are equal then only one fifo is allocated
+            // in the shared memory module.
+            if (linkOp->getInputObjectFifos().size() != linkOp->getOutputObjectFifos().size()) {
+            if (createOp.getViaSharedMem().value() == 1) {
+              isUsedInLinkOp = true;
+            } else if (createOp.getViaSharedMem().value() == 0){
+              duplicates = true;
               isUsedInLinkOp = false;
-          } else if (isLinkProvidingSharedMemory) {
+            } 
+            }
+            else
+              isUsedInLinkOp = false;
+            }
+            else
+              emitWarning("No shared memory module available between the tiles.")
+          } 
+          else if (createOp.getViaSharedMem().has_value() &&
+              isLinkViaSharedMemory && createOp == linkOp->getInputObjectFifos()[0]) {
+              isUsedInLinkOp = false;
+              emitWarning("Memory direction is ignored.");
+          }
+          else if (isLinkViaSharedMemory) {
             isUsedInLinkOp = false;
           }
+          }
+          }
         }
-      }
-    }
 
     return !hasSharedMemory || atLeastOneConsumerWantsTransform ||
            isUsedInLinkOp;
@@ -374,7 +401,7 @@ struct AIEObjectFifoStatefulTransformPass
   /// Function used to create objectFifo elements and their locks.
   /// It maps the input objectFifo to associated buffers and locks.
   void createObjectFifoElements(OpBuilder &builder, LockAnalysis &lockAnalysis,
-                                ObjectFifoCreateOp op, int share_direction) {
+                                ObjectFifoCreateOp op, int share_direction, bool &duplicates) {
     if (!op.size())
       return;
 
@@ -419,6 +446,9 @@ struct AIEObjectFifoStatefulTransformPass
         } else {
           if (linkOp->getOutputObjectFifos()[0] != op)
             return;
+        }
+        if(duplicates && int outSize = elemOutType.getNumElements(); inSize != outSize){
+          // Need to create one memory but accessed with different offsets by the fifos
         }
       }
     }
@@ -1421,7 +1451,8 @@ struct AIEObjectFifoStatefulTransformPass
 
     for (auto createOp : device.getOps<ObjectFifoCreateOp>()) {
       int share_direction = 0;
-      bool shared = !requiresDMAs(createOp, share_direction);
+      bool duplicates = false;
+      bool shared = !requiresDMAs(createOp, share_direction, duplicates);
 
       // add all tiles that contain an objectFifo to objectFifoTiles for later
       // loop unrolling pass
@@ -1441,7 +1472,7 @@ struct AIEObjectFifoStatefulTransformPass
       if (shared) {
         checkAndApplyViaSharedMemAttribute(createOp, share_direction);
         createObjectFifoElements(builder, lockAnalysis, createOp,
-                                 share_direction);
+                                 share_direction, duplicates);
       } else {
         if (createOp.getViaSharedMem().has_value())
           createOp->emitWarning("No access to shared memory module; ignoring "
@@ -1456,7 +1487,7 @@ struct AIEObjectFifoStatefulTransformPass
           createOp.setElemNumberAttr(builder.getI32IntegerAttr(prodMaxAcquire));
         }
         createObjectFifoElements(builder, lockAnalysis, createOp,
-                                 share_direction);
+                                 share_direction, duplicates);
       }
     }
 
