@@ -190,6 +190,7 @@ def PacketInfoAttr : AttrDef<AIE_Dialect, "PacketInfo", []> {
   }];
 
   let parameters = (ins
+    "uint16_t" : $out_of_order_id,
     "uint16_t" : $pkt_type,
     "uint16_t" : $pkt_id
   );

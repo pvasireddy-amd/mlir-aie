@@ -179,6 +179,7 @@ int main(int argc, const char *argv[]) {
     uint32_t ref = (i + 1);
     if (*(bufOut + i) != ref) {
       errors++;
+      std::cout << "Expected: " << ref << " Got: " << *(bufOut + i) << std::endl;
     }
   }
 

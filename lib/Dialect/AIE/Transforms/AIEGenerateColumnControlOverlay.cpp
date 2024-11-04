@@ -170,7 +170,7 @@ struct AIEAssignTileCtrlIDsPass
         if (tOp->hasAttr("controller_id"))
           continue;
         auto pktInfoAttr = AIE::PacketInfoAttr::get(
-            tOp->getContext(), /*pkt_type*/ 0,
+            tOp->getContext(), /*out_of_order_id*/0, /*pkt_type*/ 0,
             /*pkt_id*/ tileIDMap[{tOp.colIndex(), tOp.rowIndex()}]);
         tOp->setAttr("controller_id", pktInfoAttr);
       }
