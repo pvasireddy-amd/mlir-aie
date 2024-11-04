@@ -389,9 +389,9 @@ class FlowRunner:
         self.progress_bar = None
         self.maxtasks = 5
         self.stopall = False
-        self.peano_clang_path = os.path.join(opts.peano_install_dir, "bin", "clang")
-        self.peano_opt_path = os.path.join(opts.peano_install_dir, "bin", "opt")
-        self.peano_llc_path = os.path.join(opts.peano_install_dir, "bin", "llc")
+        # self.peano_clang_path = os.path.join(opts.peano_install_dir, "bin", "clang")
+        # self.peano_opt_path = os.path.join(opts.peano_install_dir, "bin", "opt")
+        # self.peano_llc_path = os.path.join(opts.peano_install_dir, "bin", "llc")
 
     def prepend_tmp(self, x):
         return os.path.join(self.tmpdirname, x)
@@ -521,36 +521,36 @@ class FlowRunner:
 
             file_core_elf = elf_file if elf_file else corefile(".", core, "elf")
 
-            if opts.compile and opts.xchesscc:
+            if opts.compile:
                 if not opts.unified:
                     file_core_llvmir_chesslinked = await self.chesshack(task, file_core_llvmir, aie_target)
-                    if self.opts.link and self.opts.xbridge:
+                    if self.opts.link:
                         link_with_obj = await extract_input_files(file_core_bcf)
                         await self.do_call(task, ["xchesscc_wrapper", aie_target.lower(), "+w", self.prepend_tmp("work"), "-d", "+Wclang,-xir", "-f", file_core_llvmir_chesslinked, link_with_obj, "+l", file_core_bcf, "-o", file_core_elf])
-                    elif self.opts.link:
-                        await self.do_call(task, ["xchesscc_wrapper", aie_target.lower(), "+w", self.prepend_tmp("work"), "-c", "-d", "+Wclang,-xir", "-f", file_core_llvmir_chesslinked, "-o", file_core_obj])
-                        await self.do_call(task, [self.peano_clang_path, "-O2", "--target=" + aie_peano_target, file_core_obj, *clang_link_args, "-Wl,-T," + file_core_ldscript, "-o", file_core_elf])
+                    # elif self.opts.link:
+                    #     await self.do_call(task, ["xchesscc_wrapper", aie_target.lower(), "+w", self.prepend_tmp("work"), "-c", "-d", "+Wclang,-xir", "-f", file_core_llvmir_chesslinked, "-o", file_core_obj])
+                    #     await self.do_call(task, [self.peano_clang_path, "-O2", "--target=" + aie_peano_target, file_core_obj, *clang_link_args, "-Wl,-T," + file_core_ldscript, "-o", file_core_elf])
                 else:
                     file_core_obj = self.unified_file_core_obj
-                    if opts.link and opts.xbridge:
+                    if opts.link:
                         link_with_obj = await extract_input_files(file_core_bcf)
                         await self.do_call(task, ["xchesscc_wrapper", aie_target.lower(), "+w", self.prepend_tmp("work"), "-d", "-f", file_core_obj, link_with_obj, "+l", file_core_bcf, "-o", file_core_elf])
-                    elif opts.link:
-                        await self.do_call(task, [self.peano_clang_path, "-O2", "--target=" + aie_peano_target, file_core_obj, *clang_link_args, "-Wl,-T," + file_core_ldscript, "-o", file_core_elf])
+                    # elif opts.link:
+                    #     await self.do_call(task, [self.peano_clang_path, "-O2", "--target=" + aie_peano_target, file_core_obj, *clang_link_args, "-Wl,-T," + file_core_ldscript, "-o", file_core_elf])
 
-            elif opts.compile:
-                if not opts.unified:
-                    file_core_llvmir_stripped = corefile(self.tmpdirname, core, "stripped.ll")
-                    await self.do_call(task, [self.peano_opt_path, "--passes=default<O2>,strip", "-S", file_core_llvmir, "-o", file_core_llvmir_stripped])
-                    await self.do_call(task, [self.peano_llc_path, file_core_llvmir_stripped, "-O2", "--march=" + aie_target.lower(), "--function-sections", "--filetype=obj", "-o", file_core_obj])
-                else:
-                    file_core_obj = self.unified_file_core_obj
+            # elif opts.compile:
+            #     if not opts.unified:
+            #         file_core_llvmir_stripped = corefile(self.tmpdirname, core, "stripped.ll")
+            #         await self.do_call(task, [self.peano_opt_path, "--passes=default<O2>,strip", "-S", file_core_llvmir, "-o", file_core_llvmir_stripped])
+            #         await self.do_call(task, [self.peano_llc_path, file_core_llvmir_stripped, "-O2", "--march=" + aie_target.lower(), "--function-sections", "--filetype=obj", "-o", file_core_obj])
+            #     else:
+            #         file_core_obj = self.unified_file_core_obj
 
-                if opts.link and opts.xbridge:
+                if opts.link:
                     link_with_obj = await extract_input_files(file_core_bcf)
                     await self.do_call(task, ["xchesscc_wrapper", aie_target.lower(), "+w", self.prepend_tmp("work"), "-d", "-f", file_core_obj, link_with_obj, "+l", file_core_bcf, "-o", file_core_elf])
-                elif opts.link:
-                    await self.do_call(task, [self.peano_clang_path, "-O2", "--target=" + aie_peano_target, file_core_obj, *clang_link_args, "-Wl,-T," + file_core_ldscript, "-o", file_core_elf])
+                # elif opts.link:
+                #     await self.do_call(task, [self.peano_clang_path, "-O2", "--target=" + aie_peano_target, file_core_obj, *clang_link_args, "-Wl,-T," + file_core_ldscript, "-o", file_core_elf])
 
             self.progress_bar.update(self.progress_bar.task_completed, advance=1)
             if task:
@@ -1124,13 +1124,13 @@ class FlowRunner:
                 await self.do_call(progress_bar.task, ["aie-translate", "--mlir-to-llvmir", file_opt_with_addresses, "-o", file_llvmir])
 
                 self.unified_file_core_obj = self.prepend_tmp("input.o")
-                if opts.compile and opts.xchesscc:
+                if opts.compile:
                     file_llvmir_hacked = await self.chesshack(progress_bar.task, file_llvmir, aie_target)
                     await self.do_call(progress_bar.task, ["xchesscc_wrapper", aie_target.lower(), "+w", self.prepend_tmp("work"), "-c", "-d", "+Wclang,-xir", "-f", file_llvmir_hacked, "-o", self.unified_file_core_obj])
-                elif opts.compile:
-                    file_llvmir_opt = self.prepend_tmp("input.opt.ll")
-                    await self.do_call(progress_bar.task, [self.peano_opt_path, "--passes=default<O2>", "-inline-threshold=10", "-S", file_llvmir, "-o", file_llvmir_opt])
-                    await self.do_call(progress_bar.task, [self.peano_llc_path, file_llvmir_opt, "-O2", "--march=" + aie_target.lower(), "--function-sections", "--filetype=obj", "-o", self.unified_file_core_obj])
+                # elif opts.compile:
+                #     file_llvmir_opt = self.prepend_tmp("input.opt.ll")
+                #     await self.do_call(progress_bar.task, [self.peano_opt_path, "--passes=default<O2>", "-inline-threshold=10", "-S", file_llvmir, "-o", file_llvmir_opt])
+                #     await self.do_call(progress_bar.task, [self.peano_llc_path, file_llvmir_opt, "-O2", "--march=" + aie_target.lower(), "--function-sections", "--filetype=obj", "-o", self.unified_file_core_obj])
             # fmt: on
 
             progress_bar.update(progress_bar.task, advance=0, visible=False)
