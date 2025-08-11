@@ -22,8 +22,8 @@
 // ------------------------------------------------------
 // Configure this to match your buffer data type
 // ------------------------------------------------------
-using DATATYPE_IN1 = std::uint8_t;
-using DATATYPE_OUT = std::uint8_t;
+using DATATYPE_IN1 = std::int8_t;
+using DATATYPE_OUT = std::int8_t;
 #endif
 
 // Initialize Input buffer 1
@@ -41,19 +41,19 @@ void initialize_bufOut(DATATYPE_OUT *bufOut, int SIZE) {
 int verify_passthrough_kernel(DATATYPE_IN1 *bufIn1, DATATYPE_OUT *bufOut,
                               int SIZE, int verbosity) {
   int errors = 0;
-
-  for (int i = 0; i < SIZE; i++) {
-    int32_t ref = bufIn1[i];
-    int32_t test = bufOut[i];
+for(int j= 0; j < 2; j++){
+  for (int i = 0; i < SIZE/2; i++) {
+    // The LUT repeats -128..127 twice for 512 entries
+    int32_t ref = i - 128;
+    int32_t test = bufOut[i + j];
     if (test != ref) {
-      if (verbosity >= 1)
         std::cout << "Error in output " << test << " != " << ref << std::endl;
       errors++;
     } else {
-      if (verbosity >= 1)
         std::cout << "Correct output " << test << " == " << ref << std::endl;
     }
   }
+}
   return errors;
 }
 

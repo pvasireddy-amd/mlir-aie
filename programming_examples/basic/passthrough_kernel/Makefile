@@ -15,8 +15,8 @@ VPATH := ${srcdir}/../../../aie_kernels/generic
 
 devicename ?= $(if $(filter 1,$(NPU2)),npu2,npu)
 targetname = passthrough_kernel
-in1_size = 4096 # in bytes
-out_size = 4096 # in bytes, should always be equal to in1_size
+in1_size = 512 # in bytes
+out_size = 512 # in bytes, should always be equal to in1_size
 trace_size = 8192
 CHESS ?= false
 
@@ -32,7 +32,7 @@ endif
 
 all: build/final_${data_size}.xclbin
 
-build/%.cc.o: %.cc
+build/%.cc.o: lut.cc
 	mkdir -p ${@D}
 ifeq ($(devicename),npu)
 	cd ${@D} && ${PEANO_INSTALL_DIR}/bin/clang++ ${PEANOWRAP2_FLAGS} -DBIT_WIDTH=8 -c $< -o ${@F}
@@ -50,13 +50,13 @@ build/aie2_trace_lineBased_8b_${data_size}.mlir: ${srcdir}/${aie_py_src}
 	mkdir -p ${@D}
 	python3 $< -d ${devicename} -i1s ${in1_size} -os ${out_size} -t ${trace_size} > $@
 
-build/final_${data_size}.xclbin: build/aie2_lineBased_8b_${data_size}.mlir build/passThrough.cc.o
+build/final_${data_size}.xclbin: build/aie2_lineBased_8b_${data_size}.mlir build/lut.cc.o
 	mkdir -p ${@D}
 	cd ${@D} && aiecc.py --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host \
 		--no-xchesscc --no-xbridge \
 		--xclbin-name=${@F} --npu-insts-name=insts_${data_size}.bin $(<:%=../%)
 
-build/final_trace_${data_size}.xclbin: build/aie2_trace_lineBased_8b_${data_size}.mlir build/passThrough.cc.o
+build/final_trace_${data_size}.xclbin: build/aie2_trace_lineBased_8b_${data_size}.mlir build/lut.cc.o
 	mkdir -p ${@D}
 	cd ${@D} && aiecc.py --aie-generate-xclbin --aie-generate-npu-insts --no-compile-host \
 		--no-xchesscc --no-xbridge \
