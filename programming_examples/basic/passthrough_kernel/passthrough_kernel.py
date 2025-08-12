@@ -15,8 +15,8 @@ from aie.iron.device import NPU1Col1, NPU2
 
 
 def my_passthrough_kernel(dev, in1_size, out_size, trace_size):
-    in1_dtype = np.int8
-    out_dtype = np.int8
+    in1_dtype = np.uint32
+    out_dtype = np.uint8
 
     enable_trace = 1 if trace_size > 0 else 0
 
