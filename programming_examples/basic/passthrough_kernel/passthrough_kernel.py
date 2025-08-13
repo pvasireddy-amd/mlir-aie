@@ -22,18 +22,20 @@ def my_passthrough_kernel(dev, in1_size, out_size, trace_size):
 
     # Define tensor types
     line_size = in1_size // in1_dtype(0).nbytes
+    out_line_size = out_size // out_dtype(0).nbytes
     line_type = np.ndarray[(line_size,), np.dtype[in1_dtype]]
+    out_line_type = np.ndarray[(out_line_size,), np.dtype[out_dtype]]
     vector_type = np.ndarray[(line_size,), np.dtype[in1_dtype]]
 
     # Dataflow with ObjectFifos
     of_in = ObjectFifo(line_type, name="in")
-    of_out = ObjectFifo(line_type, name="out")
+    of_out = ObjectFifo(out_line_type, name="out")
 
     # External, binary kernel definition
     passthrough_fn = Kernel(
         "lutParallelLookupLine",
         "lut.cc.o",
-        [line_type, line_type, np.int32],
+        [line_type, out_line_type, np.int32],
     )
 
     # Task for the core to perform

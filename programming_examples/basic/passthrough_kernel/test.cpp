@@ -34,26 +34,29 @@ void initialize_bufIn1(DATATYPE_IN1 *bufIn1, int SIZE) {
 
 // Initialize Output buffer
 void initialize_bufOut(DATATYPE_OUT *bufOut, int SIZE) {
-  memset(bufOut, 0, SIZE);
+  memset(bufOut, 0, SIZE * sizeof(DATATYPE_IN1));
 }
 
 // Functional correctness verifyer
 int verify_passthrough_kernel(DATATYPE_IN1 *bufIn1, DATATYPE_OUT *bufOut,
                               int SIZE, int verbosity) {
   int errors = 0;
-for(int j= 0; j < 1; j++){
   for (int i = 0; i < SIZE; i++) {
-    // The LUT repeats 0..255 twice for 512 entries
-    int32_t ref = i;
-    int32_t test = bufOut[i];
-    if (test != ref) {
-        std::cout << "Error in output " << test << " != " << ref << std::endl;
-      errors++;
-    } else {
-        std::cout << "Correct output " << test << " == " << ref << std::endl;
+    uint32_t ref = i + 256;
+    // Each input value is 32 bits, so output should have 4 bytes per input
+    for (int b = 0; b < 4; b++) {
+      uint8_t expected = (ref >> (8 * b)) & 0xFF;
+      uint8_t test = bufOut[i * 4 + b];
+      if (test != expected) {
+        std::cout << "Error at index " << (i * 4 + b) << ": " << (int)test
+                  << " != " << (int)expected << std::endl;
+        errors++;
+      } else {
+        std::cout << "Correct at index " << (i * 4 + b) << ": " << (int)test
+                  << " == " << (int)expected << std::endl;
+      }
     }
   }
-}
   return errors;
 }
 
