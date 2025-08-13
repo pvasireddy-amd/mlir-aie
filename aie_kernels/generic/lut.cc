@@ -45,17 +45,23 @@ void lutParallelLookupLine(uint32_t *in, uint8_t *out, int32_t lineWidth) {
     // N=16 32-bit values : v16uint32
     ::aie::vector<uint32_t, vector_size> vout = lookup.fetch(idx_vec);
 
+    // Method 1:
     // Convert each 32-bit value to 4 8-bit values and
     // store in a 8-bit vector of size 4*N = 64 values : v64uint8
-    ::aie::vector<uint8_t, vector_size * 4> vout8;
-    for (int j = 0; j < vector_size; ++j) {
-      uint32_t val = vout[j];
-      vout8[j * 4 + 0] = static_cast<uint8_t>(val & 0xFF);
-      vout8[j * 4 + 1] = static_cast<uint8_t>((val >> 8) & 0xFF);
-      vout8[j * 4 + 2] = static_cast<uint8_t>((val >> 16) & 0xFF);
-      vout8[j * 4 + 3] = static_cast<uint8_t>((val >> 24) & 0xFF);
-    }
-    ::aie::store_v(out + i * 4, vout8);
+    v64uint8 vout8 = *(v64uint8 *)&vout;
+    v64uint8 *restrict outPtr = (v64uint8 *)(out + i * 4);
+    *outPtr = vout8;
+
+    // Method 2: 
+    // ::aie::vector<uint8_t, vector_size * 4> vout8;
+    // for (int j = 0; j < vector_size; ++j) {
+    //   uint32_t val = vout[j];
+    //   vout8[j * 4 + 0] = static_cast<uint8_t>(val & 0xFF);
+    //   vout8[j * 4 + 1] = static_cast<uint8_t>((val >> 8) & 0xFF);
+    //   vout8[j * 4 + 2] = static_cast<uint8_t>((val >> 16) & 0xFF);
+    //   vout8[j * 4 + 3] = static_cast<uint8_t>((val >> 24) & 0xFF);
+    // }
+    // ::aie::store_v(out + i * 4, vout8);
   }
 }
 
